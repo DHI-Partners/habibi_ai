@@ -5,6 +5,8 @@
 тестами, а не проверяться вручную на поднятом сайте.
 """
 
+import json
+
 import requests
 
 TIMEOUT = 60
@@ -50,8 +52,14 @@ class EngineClient:
 		self.session.headers["Authorization"] = f"Bearer {token}"
 
 	def _items(self, collection, params):
+		# filter уходит JSON-строкой: словарь requests разложил бы в query по
+		# ключам верхнего уровня, и Directus ответил бы 400 на filter=_or.
+		query = dict(params)
+		if isinstance(query.get("filter"), dict):
+			query["filter"] = json.dumps(query["filter"])
+
 		response = self.session.get(
-			f"{self.url}/items/{collection}", params=params, timeout=TIMEOUT
+			f"{self.url}/items/{collection}", params=query, timeout=TIMEOUT
 		)
 		response.raise_for_status()
 		return response.json().get("data", [])

@@ -64,6 +64,23 @@ class TestChatOwnership(unittest.TestCase):
 		params = self.client._items.call_args.args[1]
 		self.assertIn("a.example.com", str(params["filter"]))
 
+	def test_фильтр_уходит_в_запрос_json_строкой(self):
+		# Directus ждёт filter JSON-строкой. Если отдать словарь, requests
+		# сериализует только ключи — получается filter=_or и ответ 400.
+		captured = {}
+
+		def fake_get(url, params=None, timeout=None):
+			captured["params"] = params
+			raise RuntimeError("stop")
+
+		# Свежий клиент: в setUp подменён _items, а здесь проверяется именно он.
+		client = EngineClient("http://ai-engine:8055", "t", "a.example.com")
+		client.session.get = fake_get
+		with self.assertRaises(RuntimeError):
+			client.list_bots()
+		self.assertIsInstance(captured["params"]["filter"], str)
+		self.assertIn("a.example.com", captured["params"]["filter"])
+
 	def test_создание_чата_проставляет_тенанта_и_пользователя(self):
 		# Чат обязан создаваться через прокси: поле tenant в customer_chats
 		# обязательное, а расширение движка о тенантах ничего не знает —
