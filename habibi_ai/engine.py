@@ -55,3 +55,70 @@ class EngineClient:
 		)
 		response.raise_for_status()
 		return response.json().get("data", [])
+
+	def _post(self, path, payload):
+		response = self.session.post(
+			f"{self.url}/{path.lstrip('/')}", json=payload, timeout=TIMEOUT
+		)
+		response.raise_for_status()
+		return response.json()
+
+	def list_bots(self):
+		"""Боты тенанта плюс общие."""
+		return self._items(
+			"ai_bots",
+			{
+				"filter": scoped_filter(self.tenant, allow_shared=True),
+				"fields": "id,name,person_key,avatar",
+				"sort": "name",
+			},
+		)
+
+	def list_chats(self, external_user):
+		"""Чаты тенанта, заведённые этим пользователем."""
+		return self._items(
+			"customer_chats",
+			{
+				"filter": scoped_filter(self.tenant, {"external_user": {"_eq": external_user}}),
+				"fields": "id,bot_id,current_scenario",
+				"sort": "-id",
+			},
+		)
+
+	def get_chat(self, chat_id):
+		chats = self._items(
+			"customer_chats",
+			{
+				"filter": scoped_filter(self.tenant, {"id": {"_eq": chat_id}}),
+				"fields": "*",
+				"limit": 1,
+			},
+		)
+		if not chats:
+			raise ChatNotFound(chat_id)
+		return chats[0]
+
+	def get_messages(self, chat_id):
+		"""История чата. Принадлежность проверяется до выборки сообщений."""
+		self.get_chat(chat_id)
+		return self._items(
+			"chat_messages",
+			{
+				"filter": scoped_filter(self.tenant, {"chat_id": {"_eq": chat_id}}),
+				"fields": "id,role,content,date_created",
+				"sort": "sort,date_created",
+			},
+		)
+
+	def send_message(self, chat_id, message, bot_id=None):
+		"""Отправка сообщения в движок.
+
+		get_chat вызывается ДО обращения к движку намеренно: сам endpoint
+		ai-process-message о тенантах ничего не знает, и без этой проверки
+		номер чужого чата ушёл бы в него в обход фильтра.
+		"""
+		self.get_chat(chat_id)
+		payload = {"chat_id": chat_id, "user_message": message}
+		if bot_id is not None:
+			payload["bot_id"] = bot_id
+		return self._post("ai-process-message", payload)
