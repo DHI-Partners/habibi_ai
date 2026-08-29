@@ -85,6 +85,22 @@ class EngineClient:
 			},
 		)
 
+	def create_chat(self, bot_id, external_user):
+		"""Заводит чат от имени тенанта.
+
+		Создавать чат должен именно прокси: tenant в customer_chats обязателен,
+		а расширение движка о тенантах не знает — чат, созданный им самим,
+		не пройдёт INSERT.
+		"""
+		payload = {
+			"bot_id": bot_id,
+			"tenant": self.tenant,
+			"external_user": external_user,
+			"scenario_stack": [],
+		}
+		created = self._post("items/customer_chats", payload)
+		return created["data"] if isinstance(created, dict) and "data" in created else created
+
 	def get_chat(self, chat_id):
 		chats = self._items(
 			"customer_chats",

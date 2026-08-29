@@ -32,6 +32,12 @@ def list_chats():
 
 
 @frappe.whitelist()
+def create_chat(bot_id):
+	"""Заводит чат. Отдельный метод, потому что tenant проставляет сервер."""
+	return get_client().create_chat(int(bot_id), frappe.session.user)
+
+
+@frappe.whitelist()
 def get_chat(chat_id):
 	client = get_client()
 	try:

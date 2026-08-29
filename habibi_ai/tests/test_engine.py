@@ -64,6 +64,17 @@ class TestChatOwnership(unittest.TestCase):
 		params = self.client._items.call_args.args[1]
 		self.assertIn("a.example.com", str(params["filter"]))
 
+	def test_создание_чата_проставляет_тенанта_и_пользователя(self):
+		# Чат обязан создаваться через прокси: поле tenant в customer_chats
+		# обязательное, а расширение движка о тенантах ничего не знает —
+		# созданный им чат просто не пройдёт INSERT.
+		self.client._post = Mock(return_value={"data": {"id": 7}})
+		self.client.create_chat(bot_id=3, external_user="user@example.com")
+		payload = self.client._post.call_args.args[1]
+		self.assertEqual(payload["tenant"], "a.example.com")
+		self.assertEqual(payload["external_user"], "user@example.com")
+		self.assertEqual(payload["bot_id"], 3)
+
 	def test_отправка_сообщения_проверяет_чат_до_обращения_к_движку(self):
 		# Без этой проверки номер чужого чата ушёл бы в ai-process-message
 		# в обход фильтра, и движок ответил бы по чужой переписке.
