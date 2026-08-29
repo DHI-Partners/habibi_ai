@@ -34,6 +34,15 @@ def scoped_filter(tenant, extra=None, allow_shared=False):
 	return base
 
 
+class EngineError(Exception):
+	"""Движок ответил ошибкой.
+
+	Отдельный класс, чтобы наружу шло сообщение самого движка, а не голое
+	"500 Server Error": причина (нет ключа LLM, не настроен бот) лежит в теле
+	ответа, и без неё пользователь видит цифру и ничего больше.
+	"""
+
+
 class ChatNotFound(Exception):
 	"""Чат не существует либо принадлежит другому тенанту.
 
@@ -51,6 +60,23 @@ class EngineClient:
 		self.session = requests.Session()
 		self.session.headers["Authorization"] = f"Bearer {token}"
 
+	def _check(self, response):
+		"""Превращает ответ с ошибкой в EngineError с текстом причины."""
+		if response.status_code < 400:
+			return
+
+		detail = ""
+		try:
+			errors = response.json().get("errors") or []
+			detail = "; ".join(e.get("message", "") for e in errors if e.get("message"))
+		except ValueError:
+			# Не JSON — например, страница ошибки от прокси.
+			detail = ""
+
+		if detail:
+			raise EngineError(detail)
+		raise EngineError(f"движок ответил {response.status_code} на {response.url}")
+
 	def _items(self, collection, params):
 		# filter уходит JSON-строкой: словарь requests разложил бы в query по
 		# ключам верхнего уровня, и Directus ответил бы 400 на filter=_or.
@@ -61,14 +87,14 @@ class EngineClient:
 		response = self.session.get(
 			f"{self.url}/items/{collection}", params=query, timeout=TIMEOUT
 		)
-		response.raise_for_status()
+		self._check(response)
 		return response.json().get("data", [])
 
 	def _post(self, path, payload):
 		response = self.session.post(
 			f"{self.url}/{path.lstrip('/')}", json=payload, timeout=TIMEOUT
 		)
-		response.raise_for_status()
+		self._check(response)
 		return response.json()
 
 	def list_bots(self):

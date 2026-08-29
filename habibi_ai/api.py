@@ -7,7 +7,17 @@
 
 import frappe
 
-from habibi_ai.engine import ChatNotFound, EngineClient
+from habibi_ai.engine import ChatNotFound, EngineClient, EngineError
+
+# Ошибки движка, у которых есть понятное объяснение для пользователя. Ключ —
+# фрагмент сообщения от движка, значение — что показать в интерфейсе.
+KNOWN_ERRORS = {
+	"API key not found": (
+		"Движок ИИ не настроен: не задан ключ LLM. Пропишите OPENAI_API_KEY "
+		"или ANTHROPIC_API_KEY в .env сервера и перезапустите ai-engine."
+	),
+	"bot_id is required": "У чата не выбран бот.",
+}
 
 
 def get_client():
@@ -21,35 +31,49 @@ def get_client():
 	return EngineClient(url, token, frappe.local.site)
 
 
+def call(method, *args, **kwargs):
+	"""Общая обработка ошибок движка.
+
+	Без неё наружу уходит голое "500 Server Error for url: ...", по которому
+	нельзя понять ни причину, ни что делать. Сообщение самого движка при этом
+	пишется в лог целиком — в интерфейс идёт человеческая формулировка.
+	"""
+	try:
+		return method(*args, **kwargs)
+	except ChatNotFound:
+		frappe.throw("Чат не найден", frappe.DoesNotExistError)
+	except EngineError as e:
+		detail = str(e)
+		frappe.log_error(title="Ошибка движка ИИ", message=detail)
+		for fragment, explanation in KNOWN_ERRORS.items():
+			if fragment in detail:
+				frappe.throw(explanation)
+		frappe.throw(f"Движок ИИ вернул ошибку: {detail}")
+
+
 @frappe.whitelist()
 def list_bots():
-	return get_client().list_bots()
+	return call(get_client().list_bots)
 
 
 @frappe.whitelist()
 def list_chats():
-	return get_client().list_chats(frappe.session.user)
+	return call(get_client().list_chats, frappe.session.user)
 
 
 @frappe.whitelist()
 def create_chat(bot_id):
 	"""Заводит чат. Отдельный метод, потому что tenant проставляет сервер."""
-	return get_client().create_chat(int(bot_id), frappe.session.user)
+	return call(get_client().create_chat, int(bot_id), frappe.session.user)
 
 
 @frappe.whitelist()
 def get_chat(chat_id):
 	client = get_client()
-	try:
-		chat = client.get_chat(int(chat_id))
-		return {"chat": chat, "messages": client.get_messages(int(chat_id))}
-	except ChatNotFound:
-		frappe.throw("Чат не найден", frappe.DoesNotExistError)
+	chat = call(client.get_chat, int(chat_id))
+	return {"chat": chat, "messages": call(client.get_messages, int(chat_id))}
 
 
 @frappe.whitelist()
 def send_message(chat_id, message, bot_id=None):
-	try:
-		return get_client().send_message(int(chat_id), message, bot_id)
-	except ChatNotFound:
-		frappe.throw("Чат не найден", frappe.DoesNotExistError)
+	return call(get_client().send_message, int(chat_id), message, bot_id)

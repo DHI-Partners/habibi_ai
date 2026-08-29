@@ -8,7 +8,7 @@
 import unittest
 from unittest.mock import Mock
 
-from habibi_ai.engine import ChatNotFound, EngineClient, scoped_filter
+from habibi_ai.engine import ChatNotFound, EngineClient, EngineError, scoped_filter
 
 
 class TestScopedFilter(unittest.TestCase):
@@ -99,6 +99,39 @@ class TestChatOwnership(unittest.TestCase):
 		with self.assertRaises(ChatNotFound):
 			self.client.send_message(42, "привет")
 		self.client._post.assert_not_called()
+
+
+class TestEngineErrors(unittest.TestCase):
+	def setUp(self):
+		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")
+
+	def _failing_post(self, status, body):
+		import requests
+
+		def fake_post(url, json=None, timeout=None):
+			response = requests.Response()
+			response.status_code = status
+			response._content = body.encode()
+			response.url = url
+			return response
+
+		return fake_post
+
+	def test_ошибка_движка_приходит_читаемой(self):
+		# Голое "500 Server Error" пользователю ничего не говорит: настоящая
+		# причина лежит в теле ответа Directus.
+		self.client.session.post = self._failing_post(
+			500, '{"errors": [{"message": "API key not found. Set OPENAI_API_KEY"}]}'
+		)
+		with self.assertRaises(EngineError) as ctx:
+			self.client._post("ai-process-message", {})
+		self.assertIn("API key not found", str(ctx.exception))
+
+	def test_ответ_без_json_не_роняет_обработчик(self):
+		self.client.session.post = self._failing_post(502, "<html>Bad Gateway</html>")
+		with self.assertRaises(EngineError) as ctx:
+			self.client._post("ai-process-message", {})
+		self.assertIn("502", str(ctx.exception))
 
 
 if __name__ == "__main__":
