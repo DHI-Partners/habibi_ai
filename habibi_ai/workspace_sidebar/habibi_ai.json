@@ -1,0 +1,41 @@
+{
+ "app": "habibi_ai",
+ "creation": "2026-08-29 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Workspace Sidebar",
+ "header_icon": "bot",
+ "idx": 0,
+ "items": [
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "message-circle",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "ИИ-чат",
+   "link_to": "ai-chat",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "bot",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Habibi AI",
+   "link_to": "Habibi AI",
+   "link_type": "Workspace",
+   "show_arrow": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-08-29 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "Habibi AI",
+ "owner": "Administrator",
+ "standard": 1,
+ "title": "Habibi AI"
+}
