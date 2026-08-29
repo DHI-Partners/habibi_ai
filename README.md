@@ -37,3 +37,24 @@ bench --site <сайт> set-config -g habibi_ai_engine_token '<токен сер
 ```bash
 python -m unittest habibi_ai.tests.test_engine -v
 ```
+
+## Грабли
+
+**`bench execute` не вызывает методы сторонних приложений.** В Frappe 16
+команда выполняет `eval(code, globals(), locals())` в namespace модуля
+`frappe/commands/utils.py`, где импортирован только `frappe`. Поэтому
+`bench execute frappe.utils.now` работает, а `bench execute
+habibi_ai.api.list_bots` падает с `NameError: name 'habibi_ai' is not
+defined`. Обходится импортом прямо в выражении:
+
+```bash
+bench --site <сайт> execute '__import__("habibi_ai.api", fromlist=["x"]).list_bots'
+```
+
+**Права Directus кешируются.** После выдачи разрешений сервисной политике
+токен продолжает получать 403, пока движок не перезапустят:
+`docker compose restart ai-engine`.
+
+**После установки модуля нужен `bench --site <сайт> clear-cache`.** Frappe
+держит разрешённые хуки в redis, и сайт, закешировавший их до установки,
+работает так, будто модуля нет.
