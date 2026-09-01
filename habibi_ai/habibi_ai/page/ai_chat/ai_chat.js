@@ -95,7 +95,9 @@ class AiChat {
 				})
 			)
 			.then((r) => {
-				const answer = (r.message && (r.message.reply || r.message.content)) || __("Пустой ответ");
+				// Движок отдаёт текст в поле response (рядом с scenario_key и
+				// scenario_stack), а не в reply или content.
+				const answer = (r.message && r.message.response) || __("Пустой ответ");
 				this.append("assistant", answer);
 			});
 	}
