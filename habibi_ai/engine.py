@@ -11,6 +11,11 @@ import requests
 
 TIMEOUT = 60
 
+# Длина заголовка и превью в списке чатов. Названия у чата нет: поля под него в
+# customer_chats не существует, а заводить его в общей продовой схеме ради
+# подписи в списке — дороже, чем достать из сообщений.
+EXCERPT = 60
+
 
 def scoped_filter(tenant, extra=None, allow_shared=False):
 	"""Фильтр Directus, ограничивающий выборку одним тенантом.
@@ -109,8 +114,8 @@ class EngineClient:
 		)
 
 	def list_chats(self, external_user):
-		"""Чаты тенанта, заведённые этим пользователем."""
-		return self._items(
+		"""Чаты тенанта, заведённые этим пользователем, с подписью."""
+		chats = self._items(
 			"customer_chats",
 			{
 				"filter": scoped_filter(self.tenant, {"external_user": {"_eq": external_user}}),
@@ -118,6 +123,38 @@ class EngineClient:
 				"sort": "-id",
 			},
 		)
+		if not chats:
+			return []
+
+		previews = self._previews([chat["id"] for chat in chats])
+		for chat in chats:
+			chat.update(previews.get(chat["id"], {"title": "", "preview": ""}))
+		return chats
+
+	def _previews(self, chat_ids):
+		"""Заголовок и превью для каждого чата одним запросом.
+
+		Один запрос на все чаты, а не по запросу на чат: список открывается на
+		каждый заход в раздел, и N+1 здесь виден глазом.
+		"""
+		messages = self._items(
+			"chat_messages",
+			{
+				"filter": scoped_filter(self.tenant, {"chat_id": {"_in": chat_ids}}),
+				"fields": "chat_id,role,content,sort",
+				"sort": "chat_id,sort",
+				"limit": -1,
+			},
+		)
+
+		result = {}
+		for message in messages:
+			entry = result.setdefault(message["chat_id"], {"title": "", "preview": ""})
+			content = (message.get("content") or "")[:EXCERPT]
+			if not entry["title"] and message.get("role") == "user":
+				entry["title"] = content
+			entry["preview"] = content
+		return result
 
 	def create_chat(self, bot_id, external_user):
 		"""Заводит чат от имени тенанта.

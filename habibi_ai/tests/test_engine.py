@@ -154,5 +154,46 @@ class TestSendMessageDebug(unittest.TestCase):
 		self.assertTrue(payload["debug"])
 
 
+class TestListChatsPreview(unittest.TestCase):
+	def _client(self, chats, messages):
+		client = EngineClient("http://engine", "token", "naqwa.habibi-erp.com")
+		client._items = Mock(side_effect=[chats, messages])
+		return client
+
+	def test_заголовок_из_первого_сообщения_пользователя(self):
+		client = self._client(
+			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[
+				{"chat_id": 7, "role": "user", "content": "хочу курс"},
+				{"chat_id": 7, "role": "assistant", "content": "какой именно?"},
+			],
+		)
+		(chat,) = client.list_chats("user@example.com")
+		self.assertEqual(chat["title"], "хочу курс")
+		self.assertEqual(chat["preview"], "какой именно?")
+
+	def test_длинный_заголовок_обрезается(self):
+		client = self._client(
+			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"chat_id": 7, "role": "user", "content": "я" * 100}],
+		)
+		(chat,) = client.list_chats("user@example.com")
+		self.assertEqual(len(chat["title"]), 60)
+
+	def test_пустой_чат_не_ломает_список(self):
+		client = self._client([{"id": 7, "bot_id": 1, "current_scenario": None}], [])
+		(chat,) = client.list_chats("user@example.com")
+		self.assertEqual(chat["title"], "")
+		self.assertEqual(chat["preview"], "")
+
+	def test_без_чатов_за_сообщениями_не_ходим(self):
+		# Пустой _in дал бы Directus фильтр, под который не попадает ничего,
+		# то есть лишний запрос ради заведомо пустого ответа.
+		client = EngineClient("http://engine", "token", "naqwa.habibi-erp.com")
+		client._items = Mock(return_value=[])
+		self.assertEqual(client.list_chats("user@example.com"), [])
+		self.assertEqual(client._items.call_count, 1)
+
+
 if __name__ == "__main__":
 	unittest.main()
