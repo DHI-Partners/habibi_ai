@@ -9,6 +9,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import frappe
+
 from habibi_ai import api
 
 
@@ -34,3 +36,47 @@ class TestГейтТрассировки(unittest.TestCase):
 		# именем не должна открывать доступ.
 		args = self._вызвать_с_ролями(["Habibi AI Debugging Assistant"])
 		self.assertFalse(args.kwargs["debug"])
+
+
+class TestГейтКонфигурации(unittest.TestCase):
+	"""get_bot_config отдаёт те же тексты промптов, что и трассировка
+	send_message — значит и гейт у него должен быть тот же: без роли — ничего,
+	даже не урезанный ответ, а отказ, и клиент к движку вообще не должен
+	вызываться.
+	"""
+
+	def _client(self):
+		client = Mock()
+		client.get_bot_config = Mock(
+			return_value={
+				"bot": {"id": 1, "name": "Бот", "global_system_prompt": "секрет"},
+				"router_prompt": "правила роутера",
+				"scenarios": [],
+			}
+		)
+		return client
+
+	def test_без_роли_конфигурация_не_отдаётся(self):
+		client = self._client()
+		with patch("frappe.get_roles", return_value=["System Manager"]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with self.assertRaises(frappe.PermissionError):
+					api.get_bot_config(1)
+		client.get_bot_config.assert_not_called()
+
+	def test_с_ролью_конфигурация_отдаётся(self):
+		client = self._client()
+		with patch("frappe.get_roles", return_value=["System Manager", api.DEBUG_ROLE]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				result = api.get_bot_config(1)
+		client.get_bot_config.assert_called_once_with(1)
+		self.assertEqual(result["bot"]["global_system_prompt"], "секрет")
+		self.assertEqual(result["router_prompt"], "правила роутера")
+
+	def test_роль_не_подбирается_по_подстроке(self):
+		client = self._client()
+		with patch("frappe.get_roles", return_value=["Habibi AI Debugging Assistant"]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with self.assertRaises(frappe.PermissionError):
+					api.get_bot_config(1)
+		client.get_bot_config.assert_not_called()

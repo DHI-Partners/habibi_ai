@@ -85,6 +85,22 @@ def get_chat(chat_id):
 
 
 @frappe.whitelist()
+def get_bot_config(bot_id):
+	"""Конфигурация бота: глобальный промпт, роутер намерений, сценарии.
+
+	Тот же гейт, что у трассировки в send_message, и по той же причине: эти
+	тексты — интеллектуальная собственность владельца инсталляции, не
+	тенанта. Роль решает сервер (frappe.get_roles()), а не параметр запроса.
+	"""
+	if DEBUG_ROLE not in frappe.get_roles():
+		# raise напрямую, а не frappe.throw: throw уходит в msgprint, которому
+		# нужен привязанный к сайту frappe.local — а этот путь как раз обязан
+		# проверяться тестами без поднятого сайта, как и остальной модуль.
+		raise frappe.PermissionError("Конфигурация бота доступна только роли Habibi AI Debug")
+	return call(get_client().get_bot_config, int(bot_id))
+
+
+@frappe.whitelist()
 def send_message(chat_id, message, bot_id=None):
 	"""Флаг трассировки ставит сервер, а не клиент.
 

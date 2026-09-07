@@ -179,6 +179,161 @@ class TestBotOwnership(unittest.TestCase):
 		self.client._post.assert_called_once()
 
 
+class TestBotConfig(unittest.TestCase):
+	"""get_bot_config сводит три коллекции (ai_bots, chatbot_scenarios,
+	ai_prompts) в один ответ с уже подставленным текстом промпта вместо его
+	id. Гейт на эти тексты — забота api.py; здесь проверяется только сборка
+	и то, что каждый новый запрос идёт через scoped_filter.
+	"""
+
+	def setUp(self):
+		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")
+
+	def test_чужой_бот_отвергается(self):
+		# Пустой список от первого запроса (ai_bots) — бот либо не существует,
+		# либо принадлежит другому тенанту и не общий.
+		self.client._items = Mock(return_value=[])
+		with self.assertRaises(BotNotFound):
+			self.client.get_bot_config(999)
+
+	def test_бот_запрашивается_фильтром_тенанта_с_общими(self):
+		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": "будь вежлив"}], [], [], []])
+		self.client.get_bot_config(1)
+		collection, params = self.client._items.call_args_list[0][0]
+		self.assertEqual(collection, "ai_bots")
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{
+						"_or": [
+							{"tenant": {"_eq": "a.example.com"}},
+							{"tenant": {"_null": True}},
+						]
+					},
+					{"id": {"_eq": 1}},
+				]
+			},
+		)
+
+	def test_сценарии_запрашиваются_фильтром_тенанта_с_общими(self):
+		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], [], []])
+		self.client.get_bot_config(1)
+		collection, params = self.client._items.call_args_list[1][0]
+		self.assertEqual(collection, "chatbot_scenarios")
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{
+						"_or": [
+							{"tenant": {"_eq": "a.example.com"}},
+							{"tenant": {"_null": True}},
+						]
+					},
+					{"bot_id": {"_eq": 1}},
+				]
+			},
+		)
+
+	def test_промпты_сценариев_запрашиваются_одним_батч_запросом(self):
+		# Три сценария — один запрос к ai_prompts с фильтром id _in [...], а не
+		# три отдельных. На моках результат выглядел бы нормально и с N+1,
+		# поэтому смотрим на число вызовов и на аргументы, а не на итог.
+		self.client._items = Mock(
+			side_effect=[
+				[{"id": 1, "name": "Бот", "global_system_prompt": None}],
+				[
+					{"scenario_key": "general", "description": "", "initial_prompt": 10, "max_history_messages": 15, "max_stack": 10},
+					{"scenario_key": "order", "description": "", "initial_prompt": 11, "max_history_messages": 20, "max_stack": 10},
+					{"scenario_key": "hours", "description": "", "initial_prompt": 12, "max_history_messages": 5, "max_stack": 10},
+				],
+				[
+					{"id": 10, "system_prompt": "general prompt"},
+					{"id": 11, "system_prompt": "order prompt"},
+					{"id": 12, "system_prompt": "hours prompt"},
+				],
+				[],
+			]
+		)
+		self.client.get_bot_config(1)
+		self.assertEqual(self.client._items.call_count, 4)
+		collection, params = self.client._items.call_args_list[2][0]
+		self.assertEqual(collection, "ai_prompts")
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{
+						"_or": [
+							{"tenant": {"_eq": "a.example.com"}},
+							{"tenant": {"_null": True}},
+						]
+					},
+					{"id": {"_in": [10, 11, 12]}},
+				]
+			},
+		)
+
+	def test_без_сценариев_за_промптами_не_ходим(self):
+		# Пустой _in дал бы Directus фильтр, под который не попадает ничего —
+		# лишний запрос ради заведомо пустого ответа, как и в _previews.
+		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
+		self.client.get_bot_config(1)
+		self.assertEqual(self.client._items.call_count, 3)
+
+	def test_роутер_запрашивается_по_имени_intent_router(self):
+		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
+		self.client.get_bot_config(1)
+		collection, params = self.client._items.call_args_list[2][0]
+		self.assertEqual(collection, "ai_prompts")
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{
+						"_or": [
+							{"tenant": {"_eq": "a.example.com"}},
+							{"tenant": {"_null": True}},
+						]
+					},
+					{"bot_id": {"_eq": 1}, "name": {"_eq": "intent_router"}},
+				]
+			},
+		)
+
+	def test_ответ_собирается_с_текстом_промпта_вместо_id(self):
+		self.client._items = Mock(
+			side_effect=[
+				[{"id": 1, "name": "Тестовый бот", "global_system_prompt": "факты о компании"}],
+				[
+					{
+						"scenario_key": "general",
+						"description": "Общий разговор",
+						"initial_prompt": 10,
+						"max_history_messages": 15,
+						"max_stack": 10,
+					}
+				],
+				[{"id": 10, "system_prompt": "текст промпта"}],
+				[{"system_prompt": "правила роутера"}],
+			]
+		)
+		config = self.client.get_bot_config(1)
+		self.assertEqual(config["bot"]["global_system_prompt"], "факты о компании")
+		self.assertEqual(config["router_prompt"], "правила роутера")
+		self.assertEqual(len(config["scenarios"]), 1)
+		scenario = config["scenarios"][0]
+		self.assertEqual(scenario["scenario_key"], "general")
+		self.assertEqual(scenario["prompt"], "текст промпта")
+		self.assertNotIn("initial_prompt", scenario)
+
+	def test_роутер_без_промпта_возвращает_none(self):
+		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
+		config = self.client.get_bot_config(1)
+		self.assertIsNone(config["router_prompt"])
+
+
 class TestEngineErrors(unittest.TestCase):
 	def setUp(self):
 		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")

@@ -196,6 +196,93 @@ class EngineClient:
 		if not bots:
 			raise BotNotFound(bot_id)
 
+	def get_bot_config(self, bot_id):
+		"""Конфигурация бота, которая на самом деле его определяет.
+
+		В Directus это три коллекции: у ai_bots — персона и факты о бизнесе
+		прозой в global_system_prompt; у chatbot_scenarios — по строке на
+		сценарий, но её initial_prompt — числовая ссылка, а не текст, так что
+		сценарий сам по себе выглядит пустым; правила роутера намерений лежат
+		отдельно в ai_prompts под именем intent_router. Здесь всё сведено в
+		один ответ с уже подставленным текстом промпта вместо его id — как
+		list_chats сводит чаты и сообщения.
+
+		Кто имеет право это увидеть — решает api.py, не этот метод: тексты
+		промптов защищены тем же гейтом, что и трассировка send_message.
+		"""
+		bots = self._items(
+			"ai_bots",
+			{
+				"filter": scoped_filter(self.tenant, {"id": {"_eq": bot_id}}, allow_shared=True),
+				"fields": "id,name,global_system_prompt",
+				"limit": 1,
+			},
+		)
+		if not bots:
+			raise BotNotFound(bot_id)
+		bot = bots[0]
+
+		scenarios = self._items(
+			"chatbot_scenarios",
+			{
+				"filter": scoped_filter(self.tenant, {"bot_id": {"_eq": bot_id}}, allow_shared=True),
+				"fields": "scenario_key,description,initial_prompt,max_history_messages,max_stack",
+				"sort": "scenario_key",
+			},
+		)
+
+		prompts_by_id = self._prompts_by_id(
+			[s["initial_prompt"] for s in scenarios if s.get("initial_prompt")]
+		)
+
+		return {
+			"bot": bot,
+			"router_prompt": self._router_prompt(bot_id),
+			"scenarios": [
+				{
+					"scenario_key": s["scenario_key"],
+					"description": s.get("description"),
+					"max_history_messages": s.get("max_history_messages"),
+					"max_stack": s.get("max_stack"),
+					"prompt": prompts_by_id.get(s.get("initial_prompt"), ""),
+				}
+				for s in scenarios
+			],
+		}
+
+	def _prompts_by_id(self, prompt_ids):
+		"""Тексты промптов сценариев одним запросом.
+
+		Тот же приём, что и _previews: без него на каждый сценарий бота ушёл
+		бы отдельный запрос к ai_prompts, а сценариев у бота обычно несколько.
+		"""
+		if not prompt_ids:
+			return {}
+		prompts = self._items(
+			"ai_prompts",
+			{
+				"filter": scoped_filter(self.tenant, {"id": {"_in": prompt_ids}}, allow_shared=True),
+				"fields": "id,system_prompt",
+			},
+		)
+		return {p["id"]: p.get("system_prompt") for p in prompts}
+
+	def _router_prompt(self, bot_id):
+		"""Инструкция роутера намерений — строка ai_prompts с именем intent_router."""
+		prompts = self._items(
+			"ai_prompts",
+			{
+				"filter": scoped_filter(
+					self.tenant,
+					{"bot_id": {"_eq": bot_id}, "name": {"_eq": "intent_router"}},
+					allow_shared=True,
+				),
+				"fields": "system_prompt",
+				"limit": 1,
+			},
+		)
+		return prompts[0]["system_prompt"] if prompts else None
+
 	def create_chat(self, bot_id, external_user):
 		"""Заводит чат от имени тенанта.
 
