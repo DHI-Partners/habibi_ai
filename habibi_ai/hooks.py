@@ -10,7 +10,9 @@ app_license = "mit"
 required_apps = ["habibi_ui"]
 
 # Плитка модуля на рабочем столе создаётся кодом: из фикстур приложения
-# Frappe Desktop Icon не создаёт. Подробности — в habibi_ai/setup.py.
+# Frappe Desktop Icon не создаёт. Тем же хуком снимается пустой Workspace
+# "Habibi AI" на сайтах, где он остался от старой версии модуля. Подробности —
+# в habibi_ai/setup.py.
 after_install = "habibi_ai.setup.after_install"
 after_migrate = "habibi_ai.setup.after_migrate"
 
