@@ -3,7 +3,7 @@ name = "habibi_ai"
 authors = [
     { name = "Habeebe", email = "dosnet2200@gmail.com"}
 ]
-description = "ИИ-модуль: чат в desk ERPNext поверх движка Directus"
+description = "ИИ-модуль: раздел ИИ в интерфейсе habibi_ui поверх движка Directus"
 requires-python = ">=3.14"
 readme = "README.md"
 dynamic = ["version"]
