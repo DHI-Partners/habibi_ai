@@ -8,7 +8,7 @@
 import unittest
 from unittest.mock import Mock
 
-from habibi_ai.engine import ChatNotFound, EngineClient, EngineError, scoped_filter
+from habibi_ai.engine import BotNotFound, ChatNotFound, EngineClient, EngineError, scoped_filter
 
 
 class TestScopedFilter(unittest.TestCase):
@@ -85,6 +85,7 @@ class TestChatOwnership(unittest.TestCase):
 		# Чат обязан создаваться через прокси: поле tenant в customer_chats
 		# обязательное, а расширение движка о тенантах ничего не знает —
 		# созданный им чат просто не пройдёт INSERT.
+		self.client._items = Mock(return_value=[{"id": 3}])  # бот принят _check_bot
 		self.client._post = Mock(return_value={"data": {"id": 7}})
 		self.client.create_chat(bot_id=3, external_user="user@example.com")
 		payload = self.client._post.call_args.args[1]
@@ -99,6 +100,83 @@ class TestChatOwnership(unittest.TestCase):
 		with self.assertRaises(ChatNotFound):
 			self.client.send_message(42, "привет")
 		self.client._post.assert_not_called()
+
+
+class TestBotOwnership(unittest.TestCase):
+	"""bot_id приезжает из браузера непроверенным — как и chat_id.
+
+	Без этих проверок тенант, угадавший чужой числовой bot_id, получил бы
+	разговор, ведомый чужим global_system_prompt: create_chat завёл бы ему
+	чат на чужом боте, а send_message с bot_id подменил бы бота прямо внутри
+	своего чата.
+	"""
+
+	def setUp(self):
+		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")
+
+	def test_create_chat_отвергает_чужого_бота(self):
+		# Движок вернул пустой список: фильтр по тенанту (и allow_shared) не
+		# пропустил бота — значит бот либо не существует, либо чужой.
+		self.client._items = Mock(return_value=[])
+		self.client._post = Mock()
+		with self.assertRaises(BotNotFound):
+			self.client.create_chat(bot_id=999, external_user="user@example.com")
+		self.client._post.assert_not_called()
+
+	def test_create_chat_проверяет_бота_фильтром_тенанта_с_общими(self):
+		# Если этот фильтр когда-нибудь потеряет allow_shared или tenant,
+		# результат на моках всё ещё будет выглядеть нормально — поэтому
+		# смотрим на сам фильтр запроса, а не на то, что метод не упал.
+		self.client._items = Mock(return_value=[{"id": 3}])
+		self.client._post = Mock(return_value={"data": {"id": 7}})
+		self.client.create_chat(bot_id=3, external_user="user@example.com")
+		collection, params = self.client._items.call_args.args
+		self.assertEqual(collection, "ai_bots")
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{
+						"_or": [
+							{"tenant": {"_eq": "a.example.com"}},
+							{"tenant": {"_null": True}},
+						]
+					},
+					{"id": {"_eq": 3}},
+				]
+			},
+		)
+
+	def test_create_chat_пропускает_своего_и_общего_бота(self):
+		self.client._items = Mock(return_value=[{"id": 3}])
+		self.client._post = Mock(return_value={"data": {"id": 7}})
+		self.client.create_chat(bot_id=3, external_user="user@example.com")
+		self.client._post.assert_called_once()
+
+	def test_send_message_отвергает_чужого_бота(self):
+		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
+		self.client._items = Mock(return_value=[])
+		self.client._post = Mock()
+		with self.assertRaises(BotNotFound):
+			self.client.send_message(42, "привет", bot_id=999)
+		self.client._post.assert_not_called()
+
+	def test_send_message_без_bot_id_бота_не_проверяет(self):
+		# bot_id не передан — движок возьмёт chat.bot_id, а он уже проверен
+		# при создании чата. Лишний запрос к ai_bots здесь не нужен.
+		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
+		self.client._items = Mock(return_value=[])
+		self.client._post = Mock(return_value={"response": "ок"})
+		self.client.send_message(42, "привет")
+		self.client._items.assert_not_called()
+		self.client._post.assert_called_once()
+
+	def test_send_message_со_своим_bot_id_проходит(self):
+		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
+		self.client._items = Mock(return_value=[{"id": 1}])
+		self.client._post = Mock(return_value={"response": "ок"})
+		self.client.send_message(42, "привет", bot_id=1)
+		self.client._post.assert_called_once()
 
 
 class TestEngineErrors(unittest.TestCase):

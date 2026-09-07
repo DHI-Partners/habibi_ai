@@ -7,7 +7,7 @@
 
 import frappe
 
-from habibi_ai.engine import ChatNotFound, EngineClient, EngineError
+from habibi_ai.engine import BotNotFound, ChatNotFound, EngineClient, EngineError
 
 # Ошибки движка, у которых есть понятное объяснение для пользователя. Ключ —
 # фрагмент сообщения от движка, значение — что показать в интерфейсе.
@@ -47,6 +47,11 @@ def call(method, *args, **kwargs):
 		return method(*args, **kwargs)
 	except ChatNotFound:
 		frappe.throw("Чат не найден", frappe.DoesNotExistError)
+	except BotNotFound:
+		# То же намеренное смешение, что у ChatNotFound: "бот чужой" и "такого
+		# бота нет" должны выглядеть для клиента одинаково, иначе по ответу
+		# можно перебором узнать чужие id.
+		frappe.throw("Бот не найден", frappe.DoesNotExistError)
 	except EngineError as e:
 		detail = str(e)
 		frappe.log_error(title="Ошибка движка ИИ", message=detail)

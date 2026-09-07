@@ -56,6 +56,15 @@ class ChatNotFound(Exception):
 	"""
 
 
+class BotNotFound(Exception):
+	"""Бот не существует либо не принадлежит тенанту (и не общий).
+
+	Как и ChatNotFound — один класс на оба случая: отдельная ошибка для "бот
+	есть, но чужой" позволила бы перебором id узнать, какие боты вообще
+	существуют у других тенантов.
+	"""
+
+
 class EngineClient:
 	def __init__(self, url, token, tenant):
 		if not tenant:
@@ -156,13 +165,35 @@ class EngineClient:
 			entry["preview"] = content
 		return result
 
+	def _check_bot(self, bot_id):
+		"""Убеждается, что bot_id — свой или общий бот тенанта.
+
+		bot_id приезжает из браузера непроверенным. Без этой проверки чужой
+		числовой id ушёл бы в движок с сервисным токеном, который тенантов не
+		различает, и ответил бы, используя global_system_prompt чужого бота —
+		вплоть до того, что его можно было бы попросить пересказать.
+		"""
+		bots = self._items(
+			"ai_bots",
+			{
+				"filter": scoped_filter(self.tenant, {"id": {"_eq": bot_id}}, allow_shared=True),
+				"fields": "id",
+				"limit": 1,
+			},
+		)
+		if not bots:
+			raise BotNotFound(bot_id)
+
 	def create_chat(self, bot_id, external_user):
 		"""Заводит чат от имени тенанта.
 
 		Создавать чат должен именно прокси: tenant в customer_chats обязателен,
 		а расширение движка о тенантах не знает — чат, созданный им самим,
-		не пройдёт INSERT.
+		не пройдёт INSERT. _check_bot идёт до _post по той же причине, что
+		get_chat идёт до send_message: движок бы принял чужой bot_id без
+		возражений.
 		"""
+		self._check_bot(bot_id)
 		payload = {
 			"bot_id": bot_id,
 			"tenant": self.tenant,
@@ -202,12 +233,19 @@ class EngineClient:
 
 		get_chat вызывается ДО обращения к движку намеренно: сам endpoint
 		ai-process-message о тенантах ничего не знает, и без этой проверки
-		номер чужого чата ушёл бы в него в обход фильтра.
+		номер чужого чата ушёл бы в него в обход фильтра. Тем же образом
+		bot_id, если его передали (смена бота внутри чата), проверяется
+		_check_bot — иначе браузер мог бы подставить чужого бота в свой же
+		чат. Когда bot_id не передан, движок берёт бот из chat.bot_id, а тот
+		уже проверен: чужим он быть не может, потому что create_chat сам
+		проходит через _check_bot.
 
 		debug решает вызывающий, а не клиент: трассировка содержит system
 		prompt, и право на неё — вопрос ролей, о которых engine.py не знает.
 		"""
 		self.get_chat(chat_id)
+		if bot_id is not None:
+			self._check_bot(bot_id)
 		payload = {"chat_id": chat_id, "user_message": message}
 		if bot_id is not None:
 			payload["bot_id"] = bot_id
