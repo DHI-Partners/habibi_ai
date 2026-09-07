@@ -186,6 +186,27 @@ class TestListChatsPreview(unittest.TestCase):
 		self.assertEqual(chat["title"], "")
 		self.assertEqual(chat["preview"], "")
 
+	def test_чаты_запрашиваются_только_своего_тенанта(self):
+		# Основной запрос списка. Один и тот же человек может быть заведён у
+		# нескольких тенантов под одним адресом почты, поэтому фильтр по
+		# external_user сам по себе чужого не отсекает — отсекает тенант.
+		client = self._client(
+			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"chat_id": 7, "role": "user", "content": "привет"}],
+		)
+		client.list_chats("user@example.com")
+		collection, params = client._items.call_args_list[0][0]
+		self.assertEqual(collection, "customer_chats")
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{"tenant": {"_eq": "naqwa.habibi-erp.com"}},
+					{"external_user": {"_eq": "user@example.com"}},
+				]
+			},
+		)
+
 	def test_сообщения_запрашиваются_только_своего_тенанта(self):
 		# Проверяется не результат, а сам фильтр второго запроса. Номер чата —
 		# просто число, а эндпоинт движка о тенантах не знает: пропади фильтр
