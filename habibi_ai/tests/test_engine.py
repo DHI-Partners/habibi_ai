@@ -186,6 +186,29 @@ class TestListChatsPreview(unittest.TestCase):
 		self.assertEqual(chat["title"], "")
 		self.assertEqual(chat["preview"], "")
 
+	def test_сообщения_запрашиваются_только_своего_тенанта(self):
+		# Проверяется не результат, а сам фильтр второго запроса. Номер чата —
+		# просто число, а эндпоинт движка о тенантах не знает: пропади фильтр
+		# отсюда, и по угаданному номеру вернулась бы чужая переписка. Результат
+		# на моках выглядел бы при этом совершенно нормально, поэтому смотреть
+		# надо на аргументы вызова.
+		client = self._client(
+			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"chat_id": 7, "role": "user", "content": "привет"}],
+		)
+		client.list_chats("user@example.com")
+		collection, params = client._items.call_args_list[1][0]
+		self.assertEqual(collection, "chat_messages")
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{"tenant": {"_eq": "naqwa.habibi-erp.com"}},
+					{"chat_id": {"_in": [7]}},
+				]
+			},
+		)
+
 	def test_без_чатов_за_сообщениями_не_ходим(self):
 		# Пустой _in дал бы Directus фильтр, под который не попадает ничего,
 		# то есть лишний запрос ради заведомо пустого ответа.
