@@ -134,5 +134,25 @@ class TestEngineErrors(unittest.TestCase):
 		self.assertIn("502", str(ctx.exception))
 
 
+class TestSendMessageDebug(unittest.TestCase):
+	def _client(self):
+		client = EngineClient("http://engine", "token", "naqwa.habibi-erp.com")
+		client.get_chat = Mock(return_value={"id": 7})
+		client._post = Mock(return_value={"response": "ок"})
+		return client
+
+	def test_без_флага_поле_debug_не_уходит(self):
+		client = self._client()
+		client.send_message(7, "привет")
+		_, payload = client._post.call_args[0]
+		self.assertNotIn("debug", payload)
+
+	def test_с_флагом_поле_debug_уходит(self):
+		client = self._client()
+		client.send_message(7, "привет", debug=True)
+		_, payload = client._post.call_args[0]
+		self.assertTrue(payload["debug"])
+
+
 if __name__ == "__main__":
 	unittest.main()

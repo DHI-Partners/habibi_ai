@@ -9,3 +9,9 @@ app_license = "mit"
 # Frappe Desktop Icon не создаёт. Подробности — в habibi_ai/setup.py.
 after_install = "habibi_ai.setup.after_install"
 after_migrate = "habibi_ai.setup.after_migrate"
+
+# Роль-переключатель трассировки приезжает фикстурой: без неё в api.py
+# ссылка на несуществующую роль, и выдать право некому.
+fixtures = [
+	{"dt": "Role", "filters": [["name", "in", ["Habibi AI Debug"]]]},
+]

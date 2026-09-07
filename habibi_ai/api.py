@@ -19,6 +19,11 @@ KNOWN_ERRORS = {
 	"bot_id is required": "У чата не выбран бот.",
 }
 
+# Кому положена трассировка обработки. Она содержит system prompt — это
+# интеллектуальная собственность владельца инсталляции, а не тенанта, поэтому
+# право отдельное и по умолчанию его нет ни у кого.
+DEBUG_ROLE = "Habibi AI Debug"
+
 
 def get_client():
 	url = frappe.conf.get("habibi_ai_engine_url")
@@ -76,4 +81,10 @@ def get_chat(chat_id):
 
 @frappe.whitelist()
 def send_message(chat_id, message, bot_id=None):
-	return call(get_client().send_message, int(chat_id), message, bot_id)
+	"""Флаг трассировки ставит сервер, а не клиент.
+
+	В теле запроса от браузера поля debug нет вообще — ровно так же, как там
+	нет tenant. Иначе трассировку мог бы запросить любой пользователь тенанта.
+	"""
+	debug = DEBUG_ROLE in frappe.get_roles()
+	return call(get_client().send_message, int(chat_id), message, bot_id, debug=debug)

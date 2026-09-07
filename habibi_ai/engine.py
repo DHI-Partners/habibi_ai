@@ -160,15 +160,20 @@ class EngineClient:
 			},
 		)
 
-	def send_message(self, chat_id, message, bot_id=None):
+	def send_message(self, chat_id, message, bot_id=None, debug=False):
 		"""Отправка сообщения в движок.
 
 		get_chat вызывается ДО обращения к движку намеренно: сам endpoint
 		ai-process-message о тенантах ничего не знает, и без этой проверки
 		номер чужого чата ушёл бы в него в обход фильтра.
+
+		debug решает вызывающий, а не клиент: трассировка содержит system
+		prompt, и право на неё — вопрос ролей, о которых engine.py не знает.
 		"""
 		self.get_chat(chat_id)
 		payload = {"chat_id": chat_id, "user_message": message}
 		if bot_id is not None:
 			payload["bot_id"] = bot_id
+		if debug:
+			payload["debug"] = True
 		return self._post("ai-process-message", payload)
