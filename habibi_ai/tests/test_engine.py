@@ -316,6 +316,20 @@ class TestListChatsPreview(unittest.TestCase):
 		self.assertEqual(client.list_chats("user@example.com"), [])
 		self.assertEqual(client._items.call_count, 1)
 
+	def test_запрос_сообщений_для_превью_ограничен_сверху(self):
+		# limit: -1 тащил бы всю историю каждого чата целиком ради двух строк
+		# по 60 символов — против продового Directus на каждый заход в раздел.
+		from habibi_ai.engine import PREVIEW_MESSAGES_LIMIT
+
+		client = self._client(
+			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"chat_id": 7, "role": "user", "content": "привет"}],
+		)
+		client.list_chats("user@example.com")
+		_, params = client._items.call_args_list[1][0]
+		self.assertEqual(params["limit"], PREVIEW_MESSAGES_LIMIT)
+		self.assertNotEqual(params["limit"], -1)
+
 
 if __name__ == "__main__":
 	unittest.main()
