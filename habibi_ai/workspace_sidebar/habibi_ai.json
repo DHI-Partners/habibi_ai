@@ -9,18 +9,6 @@
   {
    "child": 0,
    "collapsible": 1,
-   "icon": "message-circle",
-   "indent": 0,
-   "keep_closed": 0,
-   "label": "ИИ-чат",
-   "link_to": "ai-chat",
-   "link_type": "Page",
-   "show_arrow": 0,
-   "type": "Link"
-  },
-  {
-   "child": 0,
-   "collapsible": 1,
    "icon": "bot",
    "indent": 0,
    "keep_closed": 0,

@@ -1,10 +1,11 @@
 # habibi_ai
 
-ИИ-модуль habibi: страница чата в desk ERPNext поверх движка Directus.
+ИИ-модуль habibi: раздел «ИИ» в интерфейсе `habibi_ui` поверх движка Directus.
 
 Ставится тенанту выборочно, как `habibi_ui`, через `saas_bridge` →
 `/app/site-manager` → Site apps. Движок живёт отдельно
-(`DHI-Partners/habibi_ai_engine`), один на инсталляцию.
+(`DHI-Partners/habibi_ai_engine`), один на инсталляцию. Исходники раздела —
+в `habibi_ui/frontend/src/features/ai`, здесь только серверная часть.
 
 ## Как ходят запросы
 
