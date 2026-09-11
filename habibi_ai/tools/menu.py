@@ -8,6 +8,13 @@ import frappe
 
 from habibi_ai.tools import tool
 
+# Верхняя граница на число позиций в ответе. Тихо обрезанный список опаснее
+# отсутствия ответа: модель приняла бы часть меню за всё меню и на вопрос про
+# позицию за пределами среза сказала бы клиенту, что её не существует, хотя
+# она просто не попала в лимит. Поэтому переполнение не молчит — get_menu
+# сообщает о нём прямо в тексте ответа, который видит модель.
+MENU_LIMIT = 100
+
 
 @tool(
 	name="get_menu",
@@ -22,19 +29,36 @@ def get_menu():
 	# сайта Frappe: аргументов у инструмента нет вообще, поэтому подставить
 	# тенант через вызов модели невозможно — изоляция здесь на уровне процесса,
 	# а не фильтра, который можно забыть добавить.
+	#
+	# Запрашиваем на одну позицию больше лимита — не чтобы показать её, а чтобы
+	# узнать, было ли что обрезать. Иначе список ровно из MENU_LIMIT позиций
+	# нельзя было бы отличить от списка, который на самом деле длиннее.
 	items = frappe.get_all(
 		"Item",
 		filters={"is_sales_item": 1, "disabled": 0},
 		fields=["item_code", "item_name", "standard_rate"],
-		limit_page_length=100,
+		limit_page_length=MENU_LIMIT + 1,
 		order_by="item_name",
 	)
 
 	if not items:
 		return "Меню пусто — позиций для продажи не заведено."
 
+	truncated = len(items) > MENU_LIMIT
+	if truncated:
+		items = items[:MENU_LIMIT]
+
 	lines = [
 		f"{i['item_name']} ({i['item_code']}) — {i['standard_rate']}"
 		for i in items
 	]
-	return "\n".join(lines)
+	text = "\n".join(lines)
+
+	if truncated:
+		text += (
+			f"\n\n[Показаны первые {MENU_LIMIT} позиций — в меню их больше. "
+			"Нельзя утверждать, что какой-то позиции нет, если её не видно "
+			"в этом списке.]"
+		)
+
+	return text

@@ -51,3 +51,34 @@ class TestGetMenu(unittest.TestCase):
 		# что позиций действительно нет, и сказать это клиенту.
 		with patch("frappe.get_all", return_value=[]):
 			self.assertIn("пуст", tools.execute("get_menu", {}).lower())
+
+	def test_переполнение_сообщается_модели_явно(self):
+		# Молчаливая обрезка позволила бы модели решить, что позиции за
+		# пределами среза не существует, и сказать это клиенту. Отказ должен
+		# быть виден в самом содержимом ответа, а не только в логах.
+		from habibi_ai.tools import menu as menu_module
+
+		items = [
+			{"item_code": f"IT-{i}", "item_name": f"Позиция {i}", "standard_rate": i}
+			for i in range(menu_module.MENU_LIMIT + 1)
+		]
+		with patch("frappe.get_all", return_value=items):
+			result = tools.execute("get_menu", {})
+
+		self.assertIn("больше", result)
+		self.assertEqual(result.count("Позиция"), menu_module.MENU_LIMIT)
+
+	def test_ровно_лимит_позиций_не_считается_переполнением(self):
+		# get_all вернул ровно то, что было запрошено (лимит + 1), но реальных
+		# позиций оказалось ровно MENU_LIMIT — обрезки не было.
+		from habibi_ai.tools import menu as menu_module
+
+		items = [
+			{"item_code": f"IT-{i}", "item_name": f"Позиция {i}", "standard_rate": i}
+			for i in range(menu_module.MENU_LIMIT)
+		]
+		with patch("frappe.get_all", return_value=items):
+			result = tools.execute("get_menu", {})
+
+		self.assertNotIn("больше", result)
+		self.assertEqual(result.count("Позиция"), menu_module.MENU_LIMIT)
