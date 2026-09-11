@@ -88,6 +88,16 @@ class TestЦиклИнструментов(unittest.TestCase):
 		client.step = Mock(side_effect=steps)
 		return client
 
+	def test_шаг_неизвестной_формы_даёт_внятную_ошибку(self):
+		# Движок — соседний репозиторий со своим циклом релизов. Рассинхрон
+		# контракта должен называть виновника, а не падать KeyError в прокси.
+		client = self._client_с_шагами([{"type": "нечто"}])
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with self.assertRaises(frappe.ValidationError) as cm:
+					api.send_message(1, "привет")
+		self.assertIn("неизвестной формы", str(cm.exception))
+
 	def test_текст_с_первого_шага_отдаётся_как_есть(self):
 		client = self._client_с_шагами([{"type": "text", "content": "привет"}])
 		with patch("frappe.get_roles", return_value=[]):
