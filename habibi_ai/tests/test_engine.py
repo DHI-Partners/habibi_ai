@@ -319,6 +319,50 @@ class TestBotConfig(unittest.TestCase):
 		self.assertEqual(config["scenarios"][0]["tools"], [])
 
 
+class TestMaxLoop(unittest.TestCase):
+	def setUp(self):
+		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")
+
+	def test_лимит_читается_у_явно_переданного_бота(self):
+		self.client._items = Mock(return_value=[{"max_loop": 3}])
+		self.assertEqual(self.client.get_max_loop(1, bot_id=7), 3)
+		collection, params = self.client._items.call_args[0]
+		self.assertEqual(collection, "ai_bots")
+		# Чужой бот не должен отдавать даже собственный лимит — фильтр тот же,
+		# что и у остальных чтений, а не «просто по id».
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{
+						"_or": [
+							{"tenant": {"_eq": "a.example.com"}},
+							{"tenant": {"_null": True}},
+						]
+					},
+					{"id": {"_eq": 7}},
+				]
+			},
+		)
+
+	def test_без_явного_бота_берётся_бот_чата(self):
+		self.client.get_chat = Mock(return_value={"id": 1, "bot_id": 9})
+		self.client._items = Mock(return_value=[{"max_loop": 5}])
+		self.assertEqual(self.client.get_max_loop(1), 5)
+		self.assertEqual(self.client._items.call_args[0][1]["filter"]["_and"][1], {"id": {"_eq": 9}})
+
+	def test_пустое_поле_отдаётся_как_none(self):
+		# None значит «решай сам», а не «ноль витков»: подставлять число здесь
+		# нельзя — умолчание принадлежит вызывающему, а не читателю базы.
+		self.client._items = Mock(return_value=[{"max_loop": None}])
+		self.assertIsNone(self.client.get_max_loop(1, bot_id=7))
+
+	def test_чужой_бот_даёт_отказ(self):
+		self.client._items = Mock(return_value=[])
+		with self.assertRaises(BotNotFound):
+			self.client.get_max_loop(1, bot_id=7)
+
+
 class TestEngineErrors(unittest.TestCase):
 	def setUp(self):
 		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")

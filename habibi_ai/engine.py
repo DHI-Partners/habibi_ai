@@ -311,6 +311,36 @@ class EngineClient:
 			},
 		)
 
+	def get_max_loop(self, chat_id, bot_id=None):
+		"""Сколько витков цикла разрешено этому боту, или None, если не задано.
+
+		Лимит — свойство бота, а не кода: сценарию, где инструменты идут
+		цепочкой (посмотреть меню, проверить остаток, создать заказ), витков
+		нужно больше, чем боту, который только отвечает текстом. Пустое поле
+		означает «значение по умолчанию», и решает его вызывающий — здесь мы
+		честно отдаём None, а не подставляем число, о котором движок не знает.
+
+		Бот берётся тот же, что и в step: явный bot_id, иначе бот чата. Чтение
+		идёт через scoped_filter, поэтому чужой id не даст ни лимита, ни факта
+		существования бота.
+		"""
+		if bot_id is None:
+			bot_id = self.get_chat(chat_id).get("bot_id")
+		if bot_id is None:
+			return None
+
+		bots = self._items(
+			"ai_bots",
+			{
+				"filter": scoped_filter(self.tenant, {"id": {"_eq": bot_id}}, allow_shared=True),
+				"fields": "max_loop",
+				"limit": 1,
+			},
+		)
+		if not bots:
+			raise BotNotFound(bot_id)
+		return bots[0].get("max_loop")
+
 	def step(self, chat_id, message, bot_id=None, turn=None, tools=None, debug=False):
 		"""Один шаг обработки: движок отвечает текстом либо просит вызвать инструмент.
 

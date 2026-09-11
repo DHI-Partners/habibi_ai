@@ -88,6 +88,29 @@ class TestЦиклИнструментов(unittest.TestCase):
 		client.step = Mock(side_effect=steps)
 		return client
 
+	def test_лимит_витков_берётся_у_бота(self):
+		# Поле бота, а не константа: сценарию с цепочкой инструментов витков
+		# нужно больше. Проверяем через число обращений к движку, а не через
+		# текст ошибки — текст можно подогнать, счётчик нет.
+		client = self._client_с_шагами([{"type": "tool_use", "id": "t", "name": "нет_такого", "input": {}}] * 10)
+		client.get_max_loop = Mock(return_value=2)
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with self.assertRaises(frappe.ValidationError):
+					api.send_message(1, "привет")
+		self.assertEqual(client.step.call_count, 2)
+
+	def test_непригодный_лимит_заменяется_значением_по_умолчанию(self):
+		# Ноль из ручной правки выродил бы цикл в мгновенную ошибку «не смог
+		# ответить», и причину искали бы в модели, а не в поле бота.
+		client = self._client_с_шагами([{"type": "tool_use", "id": "t", "name": "нет_такого", "input": {}}] * 20)
+		client.get_max_loop = Mock(return_value=0)
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with self.assertRaises(frappe.ValidationError):
+					api.send_message(1, "привет")
+		self.assertEqual(client.step.call_count, api.MAX_LOOP)
+
 	def test_шаг_неизвестной_формы_даёт_внятную_ошибку(self):
 		# Движок — соседний репозиторий со своим циклом релизов. Рассинхрон
 		# контракта должен называть виновника, а не падать KeyError в прокси.
