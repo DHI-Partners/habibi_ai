@@ -216,6 +216,36 @@ class TestЦиклИнструментов(unittest.TestCase):
 		self.assertEqual(len(rejected), 1)
 		self.assertEqual(rejected[0]["data"]["name"], "create_order")
 
+	def test_виток_цикла_виден_в_трассировке(self):
+		# Спека §8: в трассировке должен быть виден номер витка и лимит, а
+		# граница между витками движка — не размыта. Собственный шаг прокси
+		# должен встать ПЕРЕД шагами движка за этот же виток.
+		client = self._client_с_шагами([
+			{
+				"type": "tool_use",
+				"id": "t1",
+				"name": "get_menu",
+				"input": {},
+				"debug": [{"step": "engine_step_1", "data": {}}],
+			},
+			{"type": "text", "content": "готово", "debug": [{"step": "engine_step_2", "data": {}}]},
+		])
+		client.get_max_loop = Mock(return_value=5)
+		with patch("frappe.get_roles", return_value=[api.DEBUG_ROLE]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with patch("habibi_ai.tools.execute", return_value="меню"):
+					result = api.send_message(1, "что есть?")
+
+		loop_steps = [s for s in result["debug"] if s["step"] == "loop"]
+		self.assertEqual([s["data"]["iteration"] for s in loop_steps], [1, 2])
+		self.assertTrue(all(s["data"]["max_loop"] == 5 for s in loop_steps))
+		# Первый шаг витка прокси должен идти раньше движковых шагов того же
+		# витка, иначе номер витка подписывал бы чужие данные.
+		self.assertLess(
+			result["debug"].index(loop_steps[0]),
+			[i for i, s in enumerate(result["debug"]) if s["step"] == "engine_step_1"][0],
+		)
+
 	def test_бесконечный_цикл_обрывается_ошибкой(self):
 		# Модель, которая вызывает инструменты и не приходит к ответу, означает,
 		# что задача ей не по силам. Молчаливая остановка скрыла бы это.
