@@ -157,9 +157,22 @@ def send_message(chat_id, message, bot_id=None):
 		# оба, чтобы на следующем витке видеть, что именно уже было исполнено.
 		# В chat_messages они не попадают: это внутренняя кухня хода, а не
 		# история переписки с пользователем.
-		turn.append(
-			{"type": "tool_use", "id": step["id"], "name": step["name"], "input": step.get("input") or {}}
-		)
+		tool_use_entry = {
+			"type": "tool_use",
+			"id": step["id"],
+			"name": step["name"],
+			"input": step.get("input") or {},
+		}
+		# raw — содержимое ответа модели целиком, как его прислал движок.
+		# Прокси его не читает и не интерпретирует, только возит дальше:
+		# провайдеру нужно получить виток ассистента нетронутым (у моделей с
+		# адаптивным мышлением рядом с tool_use лежат блоки thinking, и
+		# собранный заново виток без них отвергается на следующем шаге).
+		# Если движок его не прислал — ключ не кладём вовсе, а не в None:
+		# отсутствие поля и пустое значение для движка не одно и то же.
+		if step.get("raw") is not None:
+			tool_use_entry["raw"] = step["raw"]
+		turn.append(tool_use_entry)
 		turn.append(
 			{"type": "tool_result", "id": step["id"], "content": tools.execute(step["name"], step.get("input") or {})}
 		)

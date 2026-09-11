@@ -145,6 +145,39 @@ class TestЦиклИнструментов(unittest.TestCase):
 		turn = client.step.call_args_list[1].kwargs["turn"]
 		self.assertEqual(turn[1], {"type": "tool_result", "id": "t1", "content": "шаурма — 350"})
 
+	def test_raw_доезжает_до_следующего_шага(self):
+		# Движок может прислать content-блоки ответа модели целиком (thinking
+		# рядом с tool_use у моделей с адаптивным мышлением). Прокси их не
+		# читает, но обязан довезти нетронутыми до следующего вызова step —
+		# иначе провайдер отклонит виток ассистента, собранный заново.
+		raw_blocks = [{"type": "thinking", "text": "..."}, {"type": "tool_use", "id": "t1"}]
+		client = self._client_с_шагами([
+			{"type": "tool_use", "id": "t1", "name": "get_menu", "input": {}, "raw": raw_blocks},
+			{"type": "text", "content": "шаурма 350"},
+		])
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with patch("habibi_ai.tools.execute", return_value="шаурма — 350"):
+					api.send_message(1, "что есть?")
+
+		turn = client.step.call_args_list[1].kwargs["turn"]
+		self.assertEqual(turn[0]["raw"], raw_blocks)
+
+	def test_без_raw_ключ_не_появляется(self):
+		# Отсутствие поля у шага — не то же самое, что пустое значение: ключ
+		# raw не должен появляться в turn вовсе, если движок его не прислал.
+		client = self._client_с_шагами([
+			{"type": "tool_use", "id": "t1", "name": "get_menu", "input": {}},
+			{"type": "text", "content": "шаурма 350"},
+		])
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with patch("habibi_ai.tools.execute", return_value="шаурма — 350"):
+					api.send_message(1, "что есть?")
+
+		turn = client.step.call_args_list[1].kwargs["turn"]
+		self.assertNotIn("raw", turn[0])
+
 	def test_бесконечный_цикл_обрывается_ошибкой(self):
 		# Модель, которая вызывает инструменты и не приходит к ответу, означает,
 		# что задача ей не по силам. Молчаливая остановка скрыла бы это.
