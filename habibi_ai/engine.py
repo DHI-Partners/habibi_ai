@@ -289,7 +289,7 @@ class EngineClient:
 		Создавать чат должен именно прокси: tenant в customer_chats обязателен,
 		а расширение движка о тенантах не знает — чат, созданный им самим,
 		не пройдёт INSERT. _check_bot идёт до _post по той же причине, что
-		get_chat идёт до send_message: движок бы принял чужой bot_id без
+		get_chat идёт до step: движок бы принял чужой bot_id без
 		возражений.
 		"""
 		self._check_bot(bot_id)
@@ -327,27 +327,29 @@ class EngineClient:
 			},
 		)
 
-	def send_message(self, chat_id, message, bot_id=None, debug=False):
-		"""Отправка сообщения в движок.
+	def step(self, chat_id, message, bot_id=None, turn=None, tools=None, debug=False):
+		"""Один шаг обработки: движок отвечает текстом либо просит вызвать инструмент.
 
-		get_chat вызывается ДО обращения к движку намеренно: сам endpoint
-		ai-process-message о тенантах ничего не знает, и без этой проверки
-		номер чужого чата ушёл бы в него в обход фильтра. Тем же образом
-		bot_id, если его передали (смена бота внутри чата), проверяется
-		_check_bot — иначе браузер мог бы подставить чужого бота в свой же
-		чат. Когда bot_id не передан, движок берёт бот из chat.bot_id, а тот
-		уже проверен: чужим он быть не может, потому что create_chat сам
-		проходит через _check_bot.
+		get_chat вызывается ДО обращения к движку намеренно: сам endpoint о
+		тенантах ничего не знает, и без этой проверки номер чужого чата ушёл бы
+		в него в обход фильтра. Тем же образом bot_id, если его передали,
+		проверяется _check_bot — цикл в api.send_message вызывает step на
+		каждом витке с одним и тем же bot_id, но именно из браузера он приходит
+		непроверенным, и без этой проверки чужой числовой id ушёл бы в движок с
+		сервисным токеном на каждом из витков.
 
-		debug решает вызывающий, а не клиент: трассировка содержит system
-		prompt, и право на неё — вопрос ролей, о которых engine.py не знает.
+		Цикл ведёт вызывающий (api.send_message), а не движок: инструменты
+		исполняются под правами тенанта, и учётные данные тенантов движку не
+		нужны и не передаются.
 		"""
 		self.get_chat(chat_id)
 		if bot_id is not None:
 			self._check_bot(bot_id)
-		payload = {"chat_id": chat_id, "user_message": message}
+
+		payload = {"chat_id": chat_id, "user_message": message, "turn": turn or [], "tools": tools or []}
 		if bot_id is not None:
 			payload["bot_id"] = bot_id
 		if debug:
 			payload["debug"] = True
+
 		return self._post("ai-process-message", payload)

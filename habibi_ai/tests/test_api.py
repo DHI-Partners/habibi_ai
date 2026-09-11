@@ -16,12 +16,14 @@ from habibi_ai import api
 
 class TestГейтТрассировки(unittest.TestCase):
 	def _вызвать_с_ролями(self, roles):
+		# Цикл теперь ведёт api.send_message через client.step, а не через
+		# client.send_message — сигнатура и метод сменились в задаче 5.
 		client = Mock()
-		client.send_message = Mock(return_value={"response": "ок"})
+		client.step = Mock(return_value={"type": "text", "content": "ок"})
 		with patch("frappe.get_roles", return_value=roles):
 			with patch("habibi_ai.api.get_client", return_value=client):
 				api.send_message(1, "привет")
-		return client.send_message.call_args
+		return client.step.call_args
 
 	def test_без_роли_трассировка_не_запрашивается(self):
 		args = self._вызвать_с_ролями(["System Manager"])
@@ -80,3 +82,53 @@ class TestГейтКонфигурации(unittest.TestCase):
 				with self.assertRaises(frappe.PermissionError):
 					api.get_bot_config(1)
 		client.get_bot_config.assert_not_called()
+
+
+class TestЦиклИнструментов(unittest.TestCase):
+	def _client_с_шагами(self, steps):
+		client = Mock()
+		client.step = Mock(side_effect=steps)
+		return client
+
+	def test_текст_с_первого_шага_отдаётся_как_есть(self):
+		client = self._client_с_шагами([{"type": "text", "content": "привет"}])
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				result = api.send_message(1, "привет")
+		self.assertEqual(result["response"], "привет")
+		self.assertEqual(client.step.call_count, 1)
+
+	def test_вызов_инструмента_исполняется_и_цикл_продолжается(self):
+		client = self._client_с_шагами([
+			{"type": "tool_use", "id": "t1", "name": "get_menu", "input": {}},
+			{"type": "text", "content": "шаурма 350"},
+		])
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with patch("habibi_ai.tools.execute", return_value="шаурма — 350") as run:
+					result = api.send_message(1, "что есть?")
+
+		run.assert_called_once_with("get_menu", {})
+		self.assertEqual(result["response"], "шаурма 350")
+		# Результат инструмента ушёл во второй вызов движка.
+		turn = client.step.call_args_list[1].kwargs["turn"]
+		self.assertEqual(turn[1], {"type": "tool_result", "id": "t1", "content": "шаурма — 350"})
+
+	def test_бесконечный_цикл_обрывается_ошибкой(self):
+		# Модель, которая вызывает инструменты и не приходит к ответу, означает,
+		# что задача ей не по силам. Молчаливая остановка скрыла бы это.
+		steps = [{"type": "tool_use", "id": f"t{i}", "name": "get_menu", "input": {}} for i in range(api.MAX_LOOP + 1)]
+		client = self._client_с_шагами(steps)
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with patch("habibi_ai.tools.execute", return_value="[]"):
+					with self.assertRaises(Exception):
+						api.send_message(1, "зациклись")
+
+	def test_инструменты_подаются_только_объявленные(self):
+		client = self._client_с_шагами([{"type": "text", "content": "ок"}])
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				api.send_message(1, "привет")
+		sent = client.step.call_args.kwargs["tools"]
+		self.assertTrue(all("run" not in d for d in sent))

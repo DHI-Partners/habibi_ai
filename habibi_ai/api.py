@@ -7,7 +7,14 @@
 
 import frappe
 
+from habibi_ai import tools
 from habibi_ai.engine import BotNotFound, ChatNotFound, EngineClient, EngineError
+
+# Сколько витков цикла допускается на один ход. Исчерпание — ошибка, а не
+# молчаливая остановка: модель, которая вызывает инструменты и не приходит к
+# ответу, не справляется с задачей имеющимися средствами, и человек должен
+# об этом узнать.
+MAX_LOOP = 8
 
 # Ошибки движка, у которых есть понятное объяснение для пользователя. Ключ —
 # фрагмент сообщения от движка, значение — что показать в интерфейсе.
@@ -102,10 +109,61 @@ def get_bot_config(bot_id):
 
 @frappe.whitelist()
 def send_message(chat_id, message, bot_id=None):
-	"""Флаг трассировки ставит сервер, а не клиент.
+	"""Ведёт цикл: движок решает, мы исполняем, пока не получим текст.
 
-	В теле запроса от браузера поля debug нет вообще — ровно так же, как там
-	нет tenant. Иначе трассировку мог бы запросить любой пользователь тенанта.
+	Флаг трассировки ставит сервер, а не клиент: в теле запроса от браузера
+	поля debug нет вообще — ровно так же, как там нет tenant.
 	"""
 	debug = DEBUG_ROLE in frappe.get_roles()
-	return call(get_client().send_message, int(chat_id), message, bot_id, debug=debug)
+	client = get_client()
+
+	turn = []
+	collected_debug = []
+
+	for _ in range(MAX_LOOP):
+		step = call(
+			client.step,
+			int(chat_id),
+			message,
+			bot_id,
+			turn=list(turn),
+			tools=tools.definitions(_tool_names()),
+			debug=debug,
+		)
+
+		if debug and step.get("debug"):
+			collected_debug.extend(step["debug"])
+
+		if step.get("type") == "text":
+			result = {"success": True, "response": step.get("content", "")}
+			if collected_debug:
+				result["debug"] = collected_debug
+			return result
+
+		# Вызов инструмента и его результат идут в turn парой — движку нужны
+		# оба, чтобы на следующем витке видеть, что именно уже было исполнено.
+		# В chat_messages они не попадают: это внутренняя кухня хода, а не
+		# история переписки с пользователем.
+		turn.append(
+			{"type": "tool_use", "id": step["id"], "name": step["name"], "input": step.get("input") or {}}
+		)
+		turn.append(
+			{"type": "tool_result", "id": step["id"], "content": tools.execute(step["name"], step.get("input") or {})}
+		)
+
+	# Предел исчерпан: модель зациклилась на вызовах инструментов и не пришла
+	# к ответу. Молчаливая остановка скрыла бы это — пользователь должен
+	# увидеть внятную ошибку, а не зависший чат.
+	frappe.throw(
+		f"Бот не смог завершить ответ за {MAX_LOOP} обращений к инструментам. "
+		"Проверьте инструкции сценариев в трассировке."
+	)
+
+
+def _tool_names():
+	"""Какие инструменты habibi_ai готов исполнить.
+
+	Пока весь реестр: отбор по сценариям делает движок, сверяя присланное с
+	конфигурацией. Здесь остаётся граница «что вообще существует в коде».
+	"""
+	return sorted(tools.registry())

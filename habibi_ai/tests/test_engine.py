@@ -98,7 +98,7 @@ class TestChatOwnership(unittest.TestCase):
 		# в обход фильтра, и движок ответил бы по чужой переписке.
 		self.client._post = Mock()
 		with self.assertRaises(ChatNotFound):
-			self.client.send_message(42, "привет")
+			self.client.step(42, "привет")
 		self.client._post.assert_not_called()
 
 
@@ -107,8 +107,9 @@ class TestBotOwnership(unittest.TestCase):
 
 	Без этих проверок тенант, угадавший чужой числовой bot_id, получил бы
 	разговор, ведомый чужим global_system_prompt: create_chat завёл бы ему
-	чат на чужом боте, а send_message с bot_id подменил бы бота прямо внутри
-	своего чата.
+	чат на чужом боте, а step с bot_id подменил бы бота прямо внутри
+	своего чата — и на каждом витке цикла инструментов, поскольку api.py
+	передаёт один и тот же bot_id в step повторно.
 	"""
 
 	def setUp(self):
@@ -153,29 +154,29 @@ class TestBotOwnership(unittest.TestCase):
 		self.client.create_chat(bot_id=3, external_user="user@example.com")
 		self.client._post.assert_called_once()
 
-	def test_send_message_отвергает_чужого_бота(self):
+	def test_step_отвергает_чужого_бота(self):
 		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
 		self.client._items = Mock(return_value=[])
 		self.client._post = Mock()
 		with self.assertRaises(BotNotFound):
-			self.client.send_message(42, "привет", bot_id=999)
+			self.client.step(42, "привет", bot_id=999)
 		self.client._post.assert_not_called()
 
-	def test_send_message_без_bot_id_бота_не_проверяет(self):
+	def test_step_без_bot_id_бота_не_проверяет(self):
 		# bot_id не передан — движок возьмёт chat.bot_id, а он уже проверен
 		# при создании чата. Лишний запрос к ai_bots здесь не нужен.
 		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
 		self.client._items = Mock(return_value=[])
-		self.client._post = Mock(return_value={"response": "ок"})
-		self.client.send_message(42, "привет")
+		self.client._post = Mock(return_value={"type": "text", "content": "ок"})
+		self.client.step(42, "привет")
 		self.client._items.assert_not_called()
 		self.client._post.assert_called_once()
 
-	def test_send_message_со_своим_bot_id_проходит(self):
+	def test_step_со_своим_bot_id_проходит(self):
 		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
 		self.client._items = Mock(return_value=[{"id": 1}])
-		self.client._post = Mock(return_value={"response": "ок"})
-		self.client.send_message(42, "привет", bot_id=1)
+		self.client._post = Mock(return_value={"type": "text", "content": "ок"})
+		self.client.step(42, "привет", bot_id=1)
 		self.client._post.assert_called_once()
 
 
@@ -367,24 +368,42 @@ class TestEngineErrors(unittest.TestCase):
 		self.assertIn("502", str(ctx.exception))
 
 
-class TestSendMessageDebug(unittest.TestCase):
+class TestStepDebug(unittest.TestCase):
 	def _client(self):
 		client = EngineClient("http://engine", "token", "naqwa.habibi-erp.com")
 		client.get_chat = Mock(return_value={"id": 7})
-		client._post = Mock(return_value={"response": "ок"})
+		client._post = Mock(return_value={"type": "text", "content": "ок"})
 		return client
 
 	def test_без_флага_поле_debug_не_уходит(self):
 		client = self._client()
-		client.send_message(7, "привет")
+		client.step(7, "привет")
 		_, payload = client._post.call_args[0]
 		self.assertNotIn("debug", payload)
 
 	def test_с_флагом_поле_debug_уходит(self):
 		client = self._client()
-		client.send_message(7, "привет", debug=True)
+		client.step(7, "привет", debug=True)
 		_, payload = client._post.call_args[0]
 		self.assertTrue(payload["debug"])
+
+	def test_turn_и_tools_уходят_в_payload(self):
+		# Пустые по умолчанию, но ключи в payload обязаны быть: их ждёт
+		# контракт шага движка (задача 3).
+		client = self._client()
+		client.step(7, "привет")
+		_, payload = client._post.call_args[0]
+		self.assertEqual(payload["turn"], [])
+		self.assertEqual(payload["tools"], [])
+
+	def test_переданные_turn_и_tools_уходят_как_есть(self):
+		client = self._client()
+		turn = [{"type": "tool_result", "id": "t1", "content": "ок"}]
+		tool_defs = [{"name": "get_menu", "description": "d", "input_schema": {}}]
+		client.step(7, "привет", turn=turn, tools=tool_defs)
+		_, payload = client._post.call_args[0]
+		self.assertEqual(payload["turn"], turn)
+		self.assertEqual(payload["tools"], tool_defs)
 
 
 class TestListChatsPreview(unittest.TestCase):
