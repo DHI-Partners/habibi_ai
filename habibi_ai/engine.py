@@ -140,7 +140,7 @@ class EngineClient:
 			"customer_chats",
 			{
 				"filter": scoped_filter(self.tenant, {"external_user": {"_eq": external_user}}),
-				"fields": "id,bot_id,current_scenario",
+				"fields": "id,bot_id",
 				"sort": "-id",
 			},
 		)
@@ -202,10 +202,9 @@ class EngineClient:
 		В Directus это три коллекции: у ai_bots — персона и факты о бизнесе
 		прозой в global_system_prompt; у chatbot_scenarios — по строке на
 		сценарий, но её initial_prompt — числовая ссылка, а не текст, так что
-		сценарий сам по себе выглядит пустым; правила роутера намерений лежат
-		отдельно в ai_prompts под именем intent_router. Здесь всё сведено в
-		один ответ с уже подставленным текстом промпта вместо его id — как
-		list_chats сводит чаты и сообщения.
+		сценарий сам по себе выглядит пустым. Здесь всё сведено в один ответ
+		с уже подставленным текстом промпта вместо его id — как list_chats
+		сводит чаты и сообщения.
 
 		Кто имеет право это увидеть — решает api.py, не этот метод: тексты
 		промптов защищены тем же гейтом, что и трассировка send_message.
@@ -226,7 +225,7 @@ class EngineClient:
 			"chatbot_scenarios",
 			{
 				"filter": scoped_filter(self.tenant, {"bot_id": {"_eq": bot_id}}, allow_shared=True),
-				"fields": "scenario_key,description,initial_prompt,max_history_messages,max_stack",
+				"fields": "scenario_key,description,initial_prompt,tools",
 				"sort": "scenario_key",
 			},
 		)
@@ -237,13 +236,14 @@ class EngineClient:
 
 		return {
 			"bot": bot,
-			"router_prompt": self._router_prompt(bot_id),
 			"scenarios": [
 				{
 					"scenario_key": s["scenario_key"],
 					"description": s.get("description"),
-					"max_history_messages": s.get("max_history_messages"),
-					"max_stack": s.get("max_stack"),
+					# Имена инструментов, а не лимиты истории и стека: стека больше
+					# нет, а длину истории ядро не режет. Консоль отладки должна
+					# показывать то, что на самом деле уходит в модель.
+					"tools": s.get("tools") or [],
 					"prompt": prompts_by_id.get(s.get("initial_prompt"), ""),
 				}
 				for s in scenarios
@@ -267,29 +267,13 @@ class EngineClient:
 		)
 		return {p["id"]: p.get("system_prompt") for p in prompts}
 
-	def _router_prompt(self, bot_id):
-		"""Инструкция роутера намерений — строка ai_prompts с именем intent_router."""
-		prompts = self._items(
-			"ai_prompts",
-			{
-				"filter": scoped_filter(
-					self.tenant,
-					{"bot_id": {"_eq": bot_id}, "name": {"_eq": "intent_router"}},
-					allow_shared=True,
-				),
-				"fields": "system_prompt",
-				"limit": 1,
-			},
-		)
-		return prompts[0]["system_prompt"] if prompts else None
-
 	def create_chat(self, bot_id, external_user):
 		"""Заводит чат от имени тенанта.
 
 		Создавать чат должен именно прокси: tenant в customer_chats обязателен,
 		а расширение движка о тенантах не знает — чат, созданный им самим,
 		не пройдёт INSERT. _check_bot идёт до _post по той же причине, что
-		get_chat идёт до send_message: движок бы принял чужой bot_id без
+		get_chat идёт до step: движок бы принял чужой bot_id без
 		возражений.
 		"""
 		self._check_bot(bot_id)
@@ -297,7 +281,6 @@ class EngineClient:
 			"bot_id": bot_id,
 			"tenant": self.tenant,
 			"external_user": external_user,
-			"scenario_stack": [],
 		}
 		created = self._post("items/customer_chats", payload)
 		return created["data"] if isinstance(created, dict) and "data" in created else created
@@ -327,27 +310,59 @@ class EngineClient:
 			},
 		)
 
-	def send_message(self, chat_id, message, bot_id=None, debug=False):
-		"""Отправка сообщения в движок.
+	def get_max_loop(self, chat_id, bot_id=None):
+		"""Сколько витков цикла разрешено этому боту, или None, если не задано.
 
-		get_chat вызывается ДО обращения к движку намеренно: сам endpoint
-		ai-process-message о тенантах ничего не знает, и без этой проверки
-		номер чужого чата ушёл бы в него в обход фильтра. Тем же образом
-		bot_id, если его передали (смена бота внутри чата), проверяется
-		_check_bot — иначе браузер мог бы подставить чужого бота в свой же
-		чат. Когда bot_id не передан, движок берёт бот из chat.bot_id, а тот
-		уже проверен: чужим он быть не может, потому что create_chat сам
-		проходит через _check_bot.
+		Лимит — свойство бота, а не кода: сценарию, где инструменты идут
+		цепочкой (посмотреть меню, проверить остаток, создать заказ), витков
+		нужно больше, чем боту, который только отвечает текстом. Пустое поле
+		означает «значение по умолчанию», и решает его вызывающий — здесь мы
+		честно отдаём None, а не подставляем число, о котором движок не знает.
 
-		debug решает вызывающий, а не клиент: трассировка содержит system
-		prompt, и право на неё — вопрос ролей, о которых engine.py не знает.
+		Бот берётся тот же, что и в step: явный bot_id, иначе бот чата. Чтение
+		идёт через scoped_filter, поэтому чужой id не даст ни лимита, ни факта
+		существования бота.
+		"""
+		if bot_id is None:
+			bot_id = self.get_chat(chat_id).get("bot_id")
+		if bot_id is None:
+			return None
+
+		bots = self._items(
+			"ai_bots",
+			{
+				"filter": scoped_filter(self.tenant, {"id": {"_eq": bot_id}}, allow_shared=True),
+				"fields": "max_loop",
+				"limit": 1,
+			},
+		)
+		if not bots:
+			raise BotNotFound(bot_id)
+		return bots[0].get("max_loop")
+
+	def step(self, chat_id, message, bot_id=None, turn=None, tools=None, debug=False):
+		"""Один шаг обработки: движок отвечает текстом либо просит вызвать инструмент.
+
+		get_chat вызывается ДО обращения к движку намеренно: сам endpoint о
+		тенантах ничего не знает, и без этой проверки номер чужого чата ушёл бы
+		в него в обход фильтра. Тем же образом bot_id, если его передали,
+		проверяется _check_bot — цикл в api.send_message вызывает step на
+		каждом витке с одним и тем же bot_id, но именно из браузера он приходит
+		непроверенным, и без этой проверки чужой числовой id ушёл бы в движок с
+		сервисным токеном на каждом из витков.
+
+		Цикл ведёт вызывающий (api.send_message), а не движок: инструменты
+		исполняются под правами тенанта, и учётные данные тенантов движку не
+		нужны и не передаются.
 		"""
 		self.get_chat(chat_id)
 		if bot_id is not None:
 			self._check_bot(bot_id)
-		payload = {"chat_id": chat_id, "user_message": message}
+
+		payload = {"chat_id": chat_id, "user_message": message, "turn": turn or [], "tools": tools or []}
 		if bot_id is not None:
 			payload["bot_id"] = bot_id
 		if debug:
 			payload["debug"] = True
+
 		return self._post("ai-process-message", payload)

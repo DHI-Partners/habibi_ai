@@ -92,13 +92,15 @@ class TestChatOwnership(unittest.TestCase):
 		self.assertEqual(payload["tenant"], "a.example.com")
 		self.assertEqual(payload["external_user"], "user@example.com")
 		self.assertEqual(payload["bot_id"], 3)
+		# Стека сценариев в системе больше нет — поле не должно уходить в базу.
+		self.assertNotIn("scenario_stack", payload)
 
 	def test_отправка_сообщения_проверяет_чат_до_обращения_к_движку(self):
 		# Без этой проверки номер чужого чата ушёл бы в ai-process-message
 		# в обход фильтра, и движок ответил бы по чужой переписке.
 		self.client._post = Mock()
 		with self.assertRaises(ChatNotFound):
-			self.client.send_message(42, "привет")
+			self.client.step(42, "привет")
 		self.client._post.assert_not_called()
 
 
@@ -107,8 +109,9 @@ class TestBotOwnership(unittest.TestCase):
 
 	Без этих проверок тенант, угадавший чужой числовой bot_id, получил бы
 	разговор, ведомый чужим global_system_prompt: create_chat завёл бы ему
-	чат на чужом боте, а send_message с bot_id подменил бы бота прямо внутри
-	своего чата.
+	чат на чужом боте, а step с bot_id подменил бы бота прямо внутри
+	своего чата — и на каждом витке цикла инструментов, поскольку api.py
+	передаёт один и тот же bot_id в step повторно.
 	"""
 
 	def setUp(self):
@@ -153,29 +156,29 @@ class TestBotOwnership(unittest.TestCase):
 		self.client.create_chat(bot_id=3, external_user="user@example.com")
 		self.client._post.assert_called_once()
 
-	def test_send_message_отвергает_чужого_бота(self):
+	def test_step_отвергает_чужого_бота(self):
 		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
 		self.client._items = Mock(return_value=[])
 		self.client._post = Mock()
 		with self.assertRaises(BotNotFound):
-			self.client.send_message(42, "привет", bot_id=999)
+			self.client.step(42, "привет", bot_id=999)
 		self.client._post.assert_not_called()
 
-	def test_send_message_без_bot_id_бота_не_проверяет(self):
+	def test_step_без_bot_id_бота_не_проверяет(self):
 		# bot_id не передан — движок возьмёт chat.bot_id, а он уже проверен
 		# при создании чата. Лишний запрос к ai_bots здесь не нужен.
 		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
 		self.client._items = Mock(return_value=[])
-		self.client._post = Mock(return_value={"response": "ок"})
-		self.client.send_message(42, "привет")
+		self.client._post = Mock(return_value={"type": "text", "content": "ок"})
+		self.client.step(42, "привет")
 		self.client._items.assert_not_called()
 		self.client._post.assert_called_once()
 
-	def test_send_message_со_своим_bot_id_проходит(self):
+	def test_step_со_своим_bot_id_проходит(self):
 		self.client.get_chat = Mock(return_value={"id": 42, "bot_id": 1})
 		self.client._items = Mock(return_value=[{"id": 1}])
-		self.client._post = Mock(return_value={"response": "ок"})
-		self.client.send_message(42, "привет", bot_id=1)
+		self.client._post = Mock(return_value={"type": "text", "content": "ок"})
+		self.client.step(42, "привет", bot_id=1)
 		self.client._post.assert_called_once()
 
 
@@ -244,20 +247,19 @@ class TestBotConfig(unittest.TestCase):
 			side_effect=[
 				[{"id": 1, "name": "Бот", "global_system_prompt": None}],
 				[
-					{"scenario_key": "general", "description": "", "initial_prompt": 10, "max_history_messages": 15, "max_stack": 10},
-					{"scenario_key": "order", "description": "", "initial_prompt": 11, "max_history_messages": 20, "max_stack": 10},
-					{"scenario_key": "hours", "description": "", "initial_prompt": 12, "max_history_messages": 5, "max_stack": 10},
+					{"scenario_key": "general", "description": "", "initial_prompt": 10, "tools": None},
+					{"scenario_key": "order", "description": "", "initial_prompt": 11, "tools": ["get_menu"]},
+					{"scenario_key": "hours", "description": "", "initial_prompt": 12, "tools": []},
 				],
 				[
 					{"id": 10, "system_prompt": "general prompt"},
 					{"id": 11, "system_prompt": "order prompt"},
 					{"id": 12, "system_prompt": "hours prompt"},
 				],
-				[],
 			]
 		)
 		self.client.get_bot_config(1)
-		self.assertEqual(self.client._items.call_count, 4)
+		self.assertEqual(self.client._items.call_count, 3)
 		collection, params = self.client._items.call_args_list[2][0]
 		self.assertEqual(collection, "ai_prompts")
 		self.assertEqual(
@@ -278,29 +280,9 @@ class TestBotConfig(unittest.TestCase):
 	def test_без_сценариев_за_промптами_не_ходим(self):
 		# Пустой _in дал бы Directus фильтр, под который не попадает ничего —
 		# лишний запрос ради заведомо пустого ответа, как и в _previews.
-		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
+		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], []])
 		self.client.get_bot_config(1)
-		self.assertEqual(self.client._items.call_count, 3)
-
-	def test_роутер_запрашивается_по_имени_intent_router(self):
-		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
-		self.client.get_bot_config(1)
-		collection, params = self.client._items.call_args_list[2][0]
-		self.assertEqual(collection, "ai_prompts")
-		self.assertEqual(
-			params["filter"],
-			{
-				"_and": [
-					{
-						"_or": [
-							{"tenant": {"_eq": "a.example.com"}},
-							{"tenant": {"_null": True}},
-						]
-					},
-					{"bot_id": {"_eq": 1}, "name": {"_eq": "intent_router"}},
-				]
-			},
-		)
+		self.assertEqual(self.client._items.call_count, 2)
 
 	def test_ответ_собирается_с_текстом_промпта_вместо_id(self):
 		self.client._items = Mock(
@@ -311,27 +293,76 @@ class TestBotConfig(unittest.TestCase):
 						"scenario_key": "general",
 						"description": "Общий разговор",
 						"initial_prompt": 10,
-						"max_history_messages": 15,
-						"max_stack": 10,
+						"tools": ["get_menu"],
 					}
 				],
 				[{"id": 10, "system_prompt": "текст промпта"}],
-				[{"system_prompt": "правила роутера"}],
 			]
 		)
 		config = self.client.get_bot_config(1)
 		self.assertEqual(config["bot"]["global_system_prompt"], "факты о компании")
-		self.assertEqual(config["router_prompt"], "правила роутера")
 		self.assertEqual(len(config["scenarios"]), 1)
 		scenario = config["scenarios"][0]
 		self.assertEqual(scenario["scenario_key"], "general")
 		self.assertEqual(scenario["prompt"], "текст промпта")
+		self.assertEqual(scenario["tools"], ["get_menu"])
 		self.assertNotIn("initial_prompt", scenario)
 
-	def test_роутер_без_промпта_возвращает_none(self):
-		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
+	def test_сценарий_без_инструментов_отдаётся_пустым_списком(self):
+		# В базе поле nullable, и null дошёл бы до фронта как есть. Список из
+		# нуля элементов читается одинаково со списком из трёх, null — нет.
+		self.client._items = Mock(
+			side_effect=[
+				[{"id": 1, "name": "Бот", "global_system_prompt": None}],
+				[{"scenario_key": "general", "description": None, "initial_prompt": None, "tools": None}],
+			]
+		)
 		config = self.client.get_bot_config(1)
-		self.assertIsNone(config["router_prompt"])
+		self.assertEqual(config["scenarios"][0]["tools"], [])
+
+
+class TestMaxLoop(unittest.TestCase):
+	def setUp(self):
+		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")
+
+	def test_лимит_читается_у_явно_переданного_бота(self):
+		self.client._items = Mock(return_value=[{"max_loop": 3}])
+		self.assertEqual(self.client.get_max_loop(1, bot_id=7), 3)
+		collection, params = self.client._items.call_args[0]
+		self.assertEqual(collection, "ai_bots")
+		# Чужой бот не должен отдавать даже собственный лимит — фильтр тот же,
+		# что и у остальных чтений, а не «просто по id».
+		self.assertEqual(
+			params["filter"],
+			{
+				"_and": [
+					{
+						"_or": [
+							{"tenant": {"_eq": "a.example.com"}},
+							{"tenant": {"_null": True}},
+						]
+					},
+					{"id": {"_eq": 7}},
+				]
+			},
+		)
+
+	def test_без_явного_бота_берётся_бот_чата(self):
+		self.client.get_chat = Mock(return_value={"id": 1, "bot_id": 9})
+		self.client._items = Mock(return_value=[{"max_loop": 5}])
+		self.assertEqual(self.client.get_max_loop(1), 5)
+		self.assertEqual(self.client._items.call_args[0][1]["filter"]["_and"][1], {"id": {"_eq": 9}})
+
+	def test_пустое_поле_отдаётся_как_none(self):
+		# None значит «решай сам», а не «ноль витков»: подставлять число здесь
+		# нельзя — умолчание принадлежит вызывающему, а не читателю базы.
+		self.client._items = Mock(return_value=[{"max_loop": None}])
+		self.assertIsNone(self.client.get_max_loop(1, bot_id=7))
+
+	def test_чужой_бот_даёт_отказ(self):
+		self.client._items = Mock(return_value=[])
+		with self.assertRaises(BotNotFound):
+			self.client.get_max_loop(1, bot_id=7)
 
 
 class TestEngineErrors(unittest.TestCase):
@@ -367,24 +398,42 @@ class TestEngineErrors(unittest.TestCase):
 		self.assertIn("502", str(ctx.exception))
 
 
-class TestSendMessageDebug(unittest.TestCase):
+class TestStepDebug(unittest.TestCase):
 	def _client(self):
 		client = EngineClient("http://engine", "token", "naqwa.habibi-erp.com")
 		client.get_chat = Mock(return_value={"id": 7})
-		client._post = Mock(return_value={"response": "ок"})
+		client._post = Mock(return_value={"type": "text", "content": "ок"})
 		return client
 
 	def test_без_флага_поле_debug_не_уходит(self):
 		client = self._client()
-		client.send_message(7, "привет")
+		client.step(7, "привет")
 		_, payload = client._post.call_args[0]
 		self.assertNotIn("debug", payload)
 
 	def test_с_флагом_поле_debug_уходит(self):
 		client = self._client()
-		client.send_message(7, "привет", debug=True)
+		client.step(7, "привет", debug=True)
 		_, payload = client._post.call_args[0]
 		self.assertTrue(payload["debug"])
+
+	def test_turn_и_tools_уходят_в_payload(self):
+		# Пустые по умолчанию, но ключи в payload обязаны быть: их ждёт
+		# контракт шага движка (задача 3).
+		client = self._client()
+		client.step(7, "привет")
+		_, payload = client._post.call_args[0]
+		self.assertEqual(payload["turn"], [])
+		self.assertEqual(payload["tools"], [])
+
+	def test_переданные_turn_и_tools_уходят_как_есть(self):
+		client = self._client()
+		turn = [{"type": "tool_result", "id": "t1", "content": "ок"}]
+		tool_defs = [{"name": "get_menu", "description": "d", "input_schema": {}}]
+		client.step(7, "привет", turn=turn, tools=tool_defs)
+		_, payload = client._post.call_args[0]
+		self.assertEqual(payload["turn"], turn)
+		self.assertEqual(payload["tools"], tool_defs)
 
 
 class TestListChatsPreview(unittest.TestCase):
@@ -395,7 +444,7 @@ class TestListChatsPreview(unittest.TestCase):
 
 	def test_заголовок_из_первого_сообщения_пользователя(self):
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[
 				{"chat_id": 7, "role": "user", "content": "хочу курс"},
 				{"chat_id": 7, "role": "assistant", "content": "какой именно?"},
@@ -407,14 +456,14 @@ class TestListChatsPreview(unittest.TestCase):
 
 	def test_длинный_заголовок_обрезается(self):
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[{"chat_id": 7, "role": "user", "content": "я" * 100}],
 		)
 		(chat,) = client.list_chats("user@example.com")
 		self.assertEqual(len(chat["title"]), 60)
 
 	def test_пустой_чат_не_ломает_список(self):
-		client = self._client([{"id": 7, "bot_id": 1, "current_scenario": None}], [])
+		client = self._client([{"id": 7, "bot_id": 1}], [])
 		(chat,) = client.list_chats("user@example.com")
 		self.assertEqual(chat["title"], "")
 		self.assertEqual(chat["preview"], "")
@@ -424,7 +473,7 @@ class TestListChatsPreview(unittest.TestCase):
 		# нескольких тенантов под одним адресом почты, поэтому фильтр по
 		# external_user сам по себе чужого не отсекает — отсекает тенант.
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[{"chat_id": 7, "role": "user", "content": "привет"}],
 		)
 		client.list_chats("user@example.com")
@@ -447,7 +496,7 @@ class TestListChatsPreview(unittest.TestCase):
 		# на моках выглядел бы при этом совершенно нормально, поэтому смотреть
 		# надо на аргументы вызова.
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[{"chat_id": 7, "role": "user", "content": "привет"}],
 		)
 		client.list_chats("user@example.com")
@@ -477,7 +526,7 @@ class TestListChatsPreview(unittest.TestCase):
 		from habibi_ai.engine import PREVIEW_MESSAGES_LIMIT
 
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[{"chat_id": 7, "role": "user", "content": "привет"}],
 		)
 		client.list_chats("user@example.com")
