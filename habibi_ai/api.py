@@ -192,6 +192,13 @@ def send_message(chat_id, message, bot_id=None):
 				f"Инструмент {step['name']} не был предложен на этом ходу. "
 				f"Доступные: {', '.join(offered)}"
 			)
+			# Отказ должен быть виден не только модели, но и человеку в
+			# трассировке — иначе попытку движка выйти за предложенный набор
+			# заметят только по косвенным следам в переписке.
+			if debug:
+				collected_debug.append(
+					{"step": "tool_rejected", "data": {"name": step["name"], "offered": offered}}
+				)
 
 		turn.append({"type": "tool_result", "id": step["id"], "content": result_content})
 

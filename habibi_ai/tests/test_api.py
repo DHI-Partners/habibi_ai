@@ -199,6 +199,23 @@ class TestЦиклИнструментов(unittest.TestCase):
 		self.assertEqual(rejection["type"], "tool_result")
 		self.assertIn("create_order", rejection["content"])
 
+	def test_отказ_на_неразрешённое_имя_виден_в_трассировке(self):
+		# Спека: отказ должен быть виден не только модели в tool_result, но и
+		# человеку в трассировке хода.
+		client = self._client_с_шагами([
+			{"type": "tool_use", "id": "t1", "name": "create_order", "input": {}},
+			{"type": "text", "content": "готово"},
+		])
+		with patch("frappe.get_roles", return_value=[api.DEBUG_ROLE]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with patch("habibi_ai.tools.execute") as run:
+					result = api.send_message(1, "закажи")
+
+		run.assert_not_called()
+		rejected = [s for s in result["debug"] if s["step"] == "tool_rejected"]
+		self.assertEqual(len(rejected), 1)
+		self.assertEqual(rejected[0]["data"]["name"], "create_order")
+
 	def test_бесконечный_цикл_обрывается_ошибкой(self):
 		# Модель, которая вызывает инструменты и не приходит к ответу, означает,
 		# что задача ей не по силам. Молчаливая остановка скрыла бы это.
