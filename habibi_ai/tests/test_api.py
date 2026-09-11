@@ -249,18 +249,27 @@ class TestЦиклИнструментов(unittest.TestCase):
 	def test_бесконечный_цикл_обрывается_ошибкой(self):
 		# Модель, которая вызывает инструменты и не приходит к ответу, означает,
 		# что задача ей не по силам. Молчаливая остановка скрыла бы это.
+		#
+		# assertRaises(Exception) прошёл бы и на StopIteration от исчерпанного
+		# side_effect — то есть и на сломанном цикле, который вызвал step лишний
+		# раз. Ловим конкретно frappe.ValidationError и считаем обращения к
+		# движку, как в соседних тестах этого класса.
 		steps = [{"type": "tool_use", "id": f"t{i}", "name": "get_menu", "input": {}} for i in range(api.MAX_LOOP + 1)]
 		client = self._client_с_шагами(steps)
 		with patch("frappe.get_roles", return_value=[]):
 			with patch("habibi_ai.api.get_client", return_value=client):
 				with patch("habibi_ai.tools.execute", return_value="[]"):
-					with self.assertRaises(Exception):
+					with self.assertRaises(frappe.ValidationError):
 						api.send_message(1, "зациклись")
+		self.assertEqual(client.step.call_count, api.MAX_LOOP)
 
 	def test_инструменты_подаются_только_объявленные(self):
+		# Имя обещает проверку состава предложенных инструментов, не только
+		# зачистку служебного ключа "run" — раньше тело этого не проверяло.
 		client = self._client_с_шагами([{"type": "text", "content": "ок"}])
 		with patch("frappe.get_roles", return_value=[]):
 			with patch("habibi_ai.api.get_client", return_value=client):
 				api.send_message(1, "привет")
 		sent = client.step.call_args.kwargs["tools"]
 		self.assertTrue(all("run" not in d for d in sent))
+		self.assertEqual({d["name"] for d in sent}, set(api._tool_names()))
