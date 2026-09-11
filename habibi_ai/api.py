@@ -128,13 +128,17 @@ def send_message(chat_id, message, bot_id=None):
 	collected_debug = []
 
 	for _ in range(max_loop):
+		# Набор, который прокси предлагает движку на этом ходу — тот же самый
+		# набор ниже сверяется с именем, которое движок попросит исполнить.
+		offered = _tool_names()
+
 		step = call(
 			client.step,
 			int(chat_id),
 			message,
 			bot_id,
 			turn=list(turn),
-			tools=tools.definitions(_tool_names()),
+			tools=tools.definitions(offered),
 			debug=debug,
 		)
 
@@ -173,9 +177,23 @@ def send_message(chat_id, message, bot_id=None):
 		if step.get("raw") is not None:
 			tool_use_entry["raw"] = step["raw"]
 		turn.append(tool_use_entry)
-		turn.append(
-			{"type": "tool_result", "id": step["id"], "content": tools.execute(step["name"], step.get("input") or {})}
-		)
+
+		if step["name"] in offered:
+			result_content = tools.execute(step["name"], step.get("input") or {})
+		else:
+			# Движок — соседний сервис со своим циклом релизов и правом решать
+			# только "что можно предложить модели", а не "что можно исполнить
+			# под правами тенанта". Имя вне списка, который прокси сам отдал
+			# этому ходу, не должно исполняться никогда: безопасно только для
+			# read-only get_menu, но с инструментом, создающим заказы, —
+			# дыра. Модель получает отказ текстом, как и на неизвестное
+			# реестру имя, и может исправиться на следующем витке.
+			result_content = (
+				f"Инструмент {step['name']} не был предложен на этом ходу. "
+				f"Доступные: {', '.join(offered)}"
+			)
+
+		turn.append({"type": "tool_result", "id": step["id"], "content": result_content})
 
 	# Предел исчерпан: модель зациклилась на вызовах инструментов и не пришла
 	# к ответу. Молчаливая остановка скрыла бы это — пользователь должен

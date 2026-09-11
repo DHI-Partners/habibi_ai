@@ -178,6 +178,27 @@ class TestЦиклИнструментов(unittest.TestCase):
 		turn = client.step.call_args_list[1].kwargs["turn"]
 		self.assertNotIn("raw", turn[0])
 
+	def test_имя_вне_предложенного_списка_не_исполняется(self):
+		# Движок — соседний сервис: имя, которое он попросил исполнить, не
+		# обязано совпадать с тем, что прокси готов исполнить. Решать это
+		# должна сторона, владеющая правами тенанта. Отказ идёт моделью
+		# текстом, а не падением хода.
+		client = self._client_с_шагами([
+			{"type": "tool_use", "id": "t1", "name": "create_order", "input": {}},
+			{"type": "text", "content": "готово"},
+		])
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with patch("habibi_ai.tools.execute") as run:
+					result = api.send_message(1, "закажи")
+
+		run.assert_not_called()
+		self.assertEqual(result["response"], "готово")
+		turn = client.step.call_args_list[1].kwargs["turn"]
+		rejection = turn[1]
+		self.assertEqual(rejection["type"], "tool_result")
+		self.assertIn("create_order", rejection["content"])
+
 	def test_бесконечный_цикл_обрывается_ошибкой(self):
 		# Модель, которая вызывает инструменты и не приходит к ответу, означает,
 		# что задача ей не по силам. Молчаливая остановка скрыла бы это.
