@@ -140,7 +140,7 @@ class EngineClient:
 			"customer_chats",
 			{
 				"filter": scoped_filter(self.tenant, {"external_user": {"_eq": external_user}}),
-				"fields": "id,bot_id,current_scenario",
+				"fields": "id,bot_id",
 				"sort": "-id",
 			},
 		)
@@ -281,7 +281,6 @@ class EngineClient:
 			"bot_id": bot_id,
 			"tenant": self.tenant,
 			"external_user": external_user,
-			"scenario_stack": [],
 		}
 		created = self._post("items/customer_chats", payload)
 		return created["data"] if isinstance(created, dict) and "data" in created else created

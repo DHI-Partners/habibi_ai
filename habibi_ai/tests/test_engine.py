@@ -92,6 +92,8 @@ class TestChatOwnership(unittest.TestCase):
 		self.assertEqual(payload["tenant"], "a.example.com")
 		self.assertEqual(payload["external_user"], "user@example.com")
 		self.assertEqual(payload["bot_id"], 3)
+		# Стека сценариев в системе больше нет — поле не должно уходить в базу.
+		self.assertNotIn("scenario_stack", payload)
 
 	def test_отправка_сообщения_проверяет_чат_до_обращения_к_движку(self):
 		# Без этой проверки номер чужого чата ушёл бы в ai-process-message
@@ -442,7 +444,7 @@ class TestListChatsPreview(unittest.TestCase):
 
 	def test_заголовок_из_первого_сообщения_пользователя(self):
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[
 				{"chat_id": 7, "role": "user", "content": "хочу курс"},
 				{"chat_id": 7, "role": "assistant", "content": "какой именно?"},
@@ -454,14 +456,14 @@ class TestListChatsPreview(unittest.TestCase):
 
 	def test_длинный_заголовок_обрезается(self):
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[{"chat_id": 7, "role": "user", "content": "я" * 100}],
 		)
 		(chat,) = client.list_chats("user@example.com")
 		self.assertEqual(len(chat["title"]), 60)
 
 	def test_пустой_чат_не_ломает_список(self):
-		client = self._client([{"id": 7, "bot_id": 1, "current_scenario": None}], [])
+		client = self._client([{"id": 7, "bot_id": 1}], [])
 		(chat,) = client.list_chats("user@example.com")
 		self.assertEqual(chat["title"], "")
 		self.assertEqual(chat["preview"], "")
@@ -471,7 +473,7 @@ class TestListChatsPreview(unittest.TestCase):
 		# нескольких тенантов под одним адресом почты, поэтому фильтр по
 		# external_user сам по себе чужого не отсекает — отсекает тенант.
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[{"chat_id": 7, "role": "user", "content": "привет"}],
 		)
 		client.list_chats("user@example.com")
@@ -494,7 +496,7 @@ class TestListChatsPreview(unittest.TestCase):
 		# на моках выглядел бы при этом совершенно нормально, поэтому смотреть
 		# надо на аргументы вызова.
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[{"chat_id": 7, "role": "user", "content": "привет"}],
 		)
 		client.list_chats("user@example.com")
@@ -524,7 +526,7 @@ class TestListChatsPreview(unittest.TestCase):
 		from habibi_ai.engine import PREVIEW_MESSAGES_LIMIT
 
 		client = self._client(
-			[{"id": 7, "bot_id": 1, "current_scenario": None}],
+			[{"id": 7, "bot_id": 1}],
 			[{"chat_id": 7, "role": "user", "content": "привет"}],
 		)
 		client.list_chats("user@example.com")
