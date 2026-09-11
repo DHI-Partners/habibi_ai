@@ -52,7 +52,6 @@ class TestГейтКонфигурации(unittest.TestCase):
 		client.get_bot_config = Mock(
 			return_value={
 				"bot": {"id": 1, "name": "Бот", "global_system_prompt": "секрет"},
-				"router_prompt": "правила роутера",
 				"scenarios": [],
 			}
 		)
@@ -73,7 +72,6 @@ class TestГейтКонфигурации(unittest.TestCase):
 				result = api.get_bot_config(1)
 		client.get_bot_config.assert_called_once_with(1)
 		self.assertEqual(result["bot"]["global_system_prompt"], "секрет")
-		self.assertEqual(result["router_prompt"], "правила роутера")
 
 	def test_роль_не_подбирается_по_подстроке(self):
 		client = self._client()

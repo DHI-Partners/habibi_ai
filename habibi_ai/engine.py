@@ -202,10 +202,9 @@ class EngineClient:
 		В Directus это три коллекции: у ai_bots — персона и факты о бизнесе
 		прозой в global_system_prompt; у chatbot_scenarios — по строке на
 		сценарий, но её initial_prompt — числовая ссылка, а не текст, так что
-		сценарий сам по себе выглядит пустым; правила роутера намерений лежат
-		отдельно в ai_prompts под именем intent_router. Здесь всё сведено в
-		один ответ с уже подставленным текстом промпта вместо его id — как
-		list_chats сводит чаты и сообщения.
+		сценарий сам по себе выглядит пустым. Здесь всё сведено в один ответ
+		с уже подставленным текстом промпта вместо его id — как list_chats
+		сводит чаты и сообщения.
 
 		Кто имеет право это увидеть — решает api.py, не этот метод: тексты
 		промптов защищены тем же гейтом, что и трассировка send_message.
@@ -226,7 +225,7 @@ class EngineClient:
 			"chatbot_scenarios",
 			{
 				"filter": scoped_filter(self.tenant, {"bot_id": {"_eq": bot_id}}, allow_shared=True),
-				"fields": "scenario_key,description,initial_prompt,max_history_messages,max_stack",
+				"fields": "scenario_key,description,initial_prompt,tools",
 				"sort": "scenario_key",
 			},
 		)
@@ -237,13 +236,14 @@ class EngineClient:
 
 		return {
 			"bot": bot,
-			"router_prompt": self._router_prompt(bot_id),
 			"scenarios": [
 				{
 					"scenario_key": s["scenario_key"],
 					"description": s.get("description"),
-					"max_history_messages": s.get("max_history_messages"),
-					"max_stack": s.get("max_stack"),
+					# Имена инструментов, а не лимиты истории и стека: стека больше
+					# нет, а длину истории ядро не режет. Консоль отладки должна
+					# показывать то, что на самом деле уходит в модель.
+					"tools": s.get("tools") or [],
 					"prompt": prompts_by_id.get(s.get("initial_prompt"), ""),
 				}
 				for s in scenarios
@@ -266,22 +266,6 @@ class EngineClient:
 			},
 		)
 		return {p["id"]: p.get("system_prompt") for p in prompts}
-
-	def _router_prompt(self, bot_id):
-		"""Инструкция роутера намерений — строка ai_prompts с именем intent_router."""
-		prompts = self._items(
-			"ai_prompts",
-			{
-				"filter": scoped_filter(
-					self.tenant,
-					{"bot_id": {"_eq": bot_id}, "name": {"_eq": "intent_router"}},
-					allow_shared=True,
-				),
-				"fields": "system_prompt",
-				"limit": 1,
-			},
-		)
-		return prompts[0]["system_prompt"] if prompts else None
 
 	def create_chat(self, bot_id, external_user):
 		"""Заводит чат от имени тенанта.

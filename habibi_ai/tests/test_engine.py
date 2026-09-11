@@ -245,20 +245,19 @@ class TestBotConfig(unittest.TestCase):
 			side_effect=[
 				[{"id": 1, "name": "Бот", "global_system_prompt": None}],
 				[
-					{"scenario_key": "general", "description": "", "initial_prompt": 10, "max_history_messages": 15, "max_stack": 10},
-					{"scenario_key": "order", "description": "", "initial_prompt": 11, "max_history_messages": 20, "max_stack": 10},
-					{"scenario_key": "hours", "description": "", "initial_prompt": 12, "max_history_messages": 5, "max_stack": 10},
+					{"scenario_key": "general", "description": "", "initial_prompt": 10, "tools": None},
+					{"scenario_key": "order", "description": "", "initial_prompt": 11, "tools": ["get_menu"]},
+					{"scenario_key": "hours", "description": "", "initial_prompt": 12, "tools": []},
 				],
 				[
 					{"id": 10, "system_prompt": "general prompt"},
 					{"id": 11, "system_prompt": "order prompt"},
 					{"id": 12, "system_prompt": "hours prompt"},
 				],
-				[],
 			]
 		)
 		self.client.get_bot_config(1)
-		self.assertEqual(self.client._items.call_count, 4)
+		self.assertEqual(self.client._items.call_count, 3)
 		collection, params = self.client._items.call_args_list[2][0]
 		self.assertEqual(collection, "ai_prompts")
 		self.assertEqual(
@@ -279,29 +278,9 @@ class TestBotConfig(unittest.TestCase):
 	def test_без_сценариев_за_промптами_не_ходим(self):
 		# Пустой _in дал бы Directus фильтр, под который не попадает ничего —
 		# лишний запрос ради заведомо пустого ответа, как и в _previews.
-		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
+		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], []])
 		self.client.get_bot_config(1)
-		self.assertEqual(self.client._items.call_count, 3)
-
-	def test_роутер_запрашивается_по_имени_intent_router(self):
-		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
-		self.client.get_bot_config(1)
-		collection, params = self.client._items.call_args_list[2][0]
-		self.assertEqual(collection, "ai_prompts")
-		self.assertEqual(
-			params["filter"],
-			{
-				"_and": [
-					{
-						"_or": [
-							{"tenant": {"_eq": "a.example.com"}},
-							{"tenant": {"_null": True}},
-						]
-					},
-					{"bot_id": {"_eq": 1}, "name": {"_eq": "intent_router"}},
-				]
-			},
-		)
+		self.assertEqual(self.client._items.call_count, 2)
 
 	def test_ответ_собирается_с_текстом_промпта_вместо_id(self):
 		self.client._items = Mock(
@@ -312,27 +291,32 @@ class TestBotConfig(unittest.TestCase):
 						"scenario_key": "general",
 						"description": "Общий разговор",
 						"initial_prompt": 10,
-						"max_history_messages": 15,
-						"max_stack": 10,
+						"tools": ["get_menu"],
 					}
 				],
 				[{"id": 10, "system_prompt": "текст промпта"}],
-				[{"system_prompt": "правила роутера"}],
 			]
 		)
 		config = self.client.get_bot_config(1)
 		self.assertEqual(config["bot"]["global_system_prompt"], "факты о компании")
-		self.assertEqual(config["router_prompt"], "правила роутера")
 		self.assertEqual(len(config["scenarios"]), 1)
 		scenario = config["scenarios"][0]
 		self.assertEqual(scenario["scenario_key"], "general")
 		self.assertEqual(scenario["prompt"], "текст промпта")
+		self.assertEqual(scenario["tools"], ["get_menu"])
 		self.assertNotIn("initial_prompt", scenario)
 
-	def test_роутер_без_промпта_возвращает_none(self):
-		self.client._items = Mock(side_effect=[[{"id": 1, "name": "Бот", "global_system_prompt": None}], [], []])
+	def test_сценарий_без_инструментов_отдаётся_пустым_списком(self):
+		# В базе поле nullable, и null дошёл бы до фронта как есть. Список из
+		# нуля элементов читается одинаково со списком из трёх, null — нет.
+		self.client._items = Mock(
+			side_effect=[
+				[{"id": 1, "name": "Бот", "global_system_prompt": None}],
+				[{"scenario_key": "general", "description": None, "initial_prompt": None, "tools": None}],
+			]
+		)
 		config = self.client.get_bot_config(1)
-		self.assertIsNone(config["router_prompt"])
+		self.assertEqual(config["scenarios"][0]["tools"], [])
 
 
 class TestEngineErrors(unittest.TestCase):
