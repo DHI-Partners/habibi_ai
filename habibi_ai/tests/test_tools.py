@@ -133,3 +133,53 @@ class TestGetMenu(unittest.TestCase):
 
 		self.assertNotIn("больше", result)
 		self.assertEqual(result.count("Позиция"), menu_module.MENU_LIMIT)
+
+
+class TestGetDeliveryZones(unittest.TestCase):
+	"""Зоны доставки заведены не приложением, а руками в конкретной инсталляции.
+
+	Поэтому главный проверяемый случай — не «как красиво напечатали», а что
+	инструмент делает там, где справочника нет вовсе.
+	"""
+
+	def _frappe(self, zones, doctype_exists=True, currency="KZT"):
+		return patch.multiple(
+			"frappe",
+			get_all=Mock(return_value=list(zones)),
+			db=Mock(
+				exists=Mock(return_value=1 if doctype_exists else None),
+				get_single_value=Mock(return_value=currency),
+			),
+		)
+
+	def test_без_справочника_бот_не_называет_условий(self):
+		# У другого тенанта этого doctype нет. Обращение к нему бросило бы
+		# исключение, и модель сказала бы клиенту про сбой — хотя правда в том,
+		# что доставка просто не настроена.
+		with self._frappe([], doctype_exists=False):
+			result = tools.execute("get_delivery_zones", {})
+		self.assertIn("не заведены", result)
+		self.assertIn("Не называй", result)
+
+	def test_зоны_отдаются_с_ценой_сроком_и_порогом(self):
+		zones = [{
+			"name": "Center", "delivery_fee": 800.0, "free_above": 10000.0,
+			"eta_minutes": 25, "notes": None,
+		}]
+		with self._frappe(zones):
+			result = tools.execute("get_delivery_zones", {})
+		self.assertIn("Center", result)
+		self.assertIn("800", result)
+		self.assertIn("25", result)
+		self.assertIn("10000", result)
+
+	def test_валюта_берётся_из_настроек_а_не_из_кода(self):
+		# Инструмент общий для всех тенантов, а тенге зашит только в одном.
+		zones = [{"name": "Z", "delivery_fee": 5.0, "free_above": None, "eta_minutes": None, "notes": None}]
+		with self._frappe(zones, currency="AED"):
+			self.assertIn("AED", tools.execute("get_delivery_zones", {}))
+
+	def test_ни_одной_активной_зоны_говорит_словами(self):
+		with self._frappe([]):
+			result = tools.execute("get_delivery_zones", {})
+		self.assertIn("Не называй", result)
