@@ -148,7 +148,8 @@ class TestGetDeliveryZones(unittest.TestCase):
 			get_all=Mock(return_value=list(zones)),
 			db=Mock(
 				exists=Mock(return_value=1 if doctype_exists else None),
-				get_single_value=Mock(return_value=currency),
+				get_single_value=Mock(return_value="Habibi Menu"),
+				get_value=Mock(return_value=currency),
 			),
 		)
 
@@ -173,8 +174,11 @@ class TestGetDeliveryZones(unittest.TestCase):
 		self.assertIn("25", result)
 		self.assertIn("10000", result)
 
-	def test_валюта_берётся_из_настроек_а_не_из_кода(self):
-		# Инструмент общий для всех тенантов, а тенге зашит только в одном.
+	def test_валюта_берётся_из_прайс_листа_продаж(self):
+		# Не из системной валюты и не из компании по умолчанию: в инсталляции
+		# может быть несколько компаний с разными валютами, и на проде
+		# умолчанием стоит тестовая (SAR), тогда как бургерная работает в KZT.
+		# Бот, назвавший меню в тенге и доставку в риалах, хуже промолчавшего.
 		zones = [{"name": "Z", "delivery_fee": 5.0, "free_above": None, "eta_minutes": None, "notes": None}]
 		with self._frappe(zones, currency="AED"):
 			self.assertIn("AED", tools.execute("get_delivery_zones", {}))

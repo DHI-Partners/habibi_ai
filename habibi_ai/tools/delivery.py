@@ -13,6 +13,19 @@ from habibi_ai.tools import tool
 ZONE_DOCTYPE = "Delivery Zone"
 
 
+def _selling_currency():
+	"""Валюта, в которой бот называет цены — то есть валюта прайс-листа продаж."""
+	price_list = frappe.db.get_single_value("Selling Settings", "selling_price_list")
+	if price_list:
+		currency = frappe.db.get_value("Price List", price_list, "currency")
+		if currency:
+			return currency
+	# Прайс-лист не настроен — get_menu в этом случае вовсе отказывается
+	# называть цены, но зоны доставки к нему не привязаны, и показать их
+	# без валюты лучше, чем не показать вовсе.
+	return frappe.db.get_single_value("Global Defaults", "default_currency") or ""
+
+
 @tool(
 	name="get_delivery_zones",
 	description=(
@@ -47,9 +60,13 @@ def get_delivery_zones():
 			"доставки, предложи уточнить у оператора."
 		)
 
-	# Валюта берётся из настроек системы, а не пишется в коде: инструмент общий
-	# для всех тенантов, а тенге зашит только в одном из них.
-	currency = frappe.db.get_single_value("Global Defaults", "default_currency") or ""
+	# Валюта берётся из того же прайс-листа, из которого бот называет цены
+	# позиций. Ни системная валюта, ни компания по умолчанию не годятся: в
+	# инсталляции может быть несколько компаний с разными валютами, и на
+	# erp.habibi-erp.com умолчанием стоит тестовая (SAR), тогда как бургерная
+	# работает в KZT. Бот, назвавший меню в тенге и доставку в риалах, хуже
+	# бота, который промолчал: цифры выглядят одинаково настоящими.
+	currency = _selling_currency()
 
 	lines = []
 	for z in zones:
