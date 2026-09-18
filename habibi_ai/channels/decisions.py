@@ -167,6 +167,58 @@ def split_text(text, limit=TELEGRAM_TEXT_LIMIT):
 	return chunks
 
 
+# Markdown модели → HTML Telegram. Telegram сам Markdown модели не понимает:
+# без перевода клиент видит **звёздочки** и решётки заголовков.
+_FENCE = re.compile(r"```[^\n`]*\n?(.*?)```", re.S)
+_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t#]*$", re.M)
+_BULLET = re.compile(r"^([ \t]*)[-*+][ \t]+", re.M)
+_BOLD = re.compile(r"\*\*(?!\s)(.+?)(?<!\s)\*\*|__(?!\s)(.+?)(?<!\s)__")
+# Курсив — только слово, обнятое с обеих сторон: иначе «2 * 3 * 4» и
+# snake_case превращались бы в курсив
+_ITALIC = re.compile(
+	r"(?<![\w*])\*(?![\s*])([^*\n]+?)(?<!\s)\*(?![\w*])|(?<![\w_])_(?![\s_])([^_\n]+?)(?<!\s)_(?![\w_])"
+)
+_TRAILING_SPACES = re.compile(r"[ \t]+$", re.M)
+_STASHED = re.compile("\x00(\\d+)\x00")
+
+PARSE_ERROR_MARKERS = ("can't parse entities", "can not parse entities", "unsupported start tag")
+
+
+def to_telegram_html(text):
+	"""Разметка модели → подмножество HTML, которое понимает Telegram.
+
+	Экранирование < и & здесь не делается: его делает strip_unsupported_html_tags
+	habibi_telegram, через который проходит любой HTML перед отправкой, —
+	экранируй мы здесь, амперсанды экранировались бы дважды.
+
+	Код и ссылки прячутся до разбора остального, чтобы звёздочки внутри них не
+	стали жирным.
+	"""
+	stash = []
+
+	def keep(html):
+		stash.append(html)
+		return f"\x00{len(stash) - 1}\x00"
+
+	text = _FENCE.sub(lambda m: keep(f"<pre>{m.group(1).rstrip()}</pre>"), text)
+	text = _INLINE_CODE.sub(lambda m: keep(f"<code>{m.group(1)}</code>"), text)
+	text = _LINK.sub(lambda m: keep(f'<a href="{m.group(2)}">{m.group(1)}</a>'), text)
+	text = _HEADING.sub(r"<b>\1</b>", text)
+	text = _BULLET.sub("\\1• ", text)
+	text = _BOLD.sub(lambda m: f"<b>{m.group(1) or m.group(2)}</b>", text)
+	text = _ITALIC.sub(lambda m: f"<i>{m.group(1) or m.group(2)}</i>", text)
+	text = _TRAILING_SPACES.sub("", text)
+	return _STASHED.sub(lambda m: stash[int(m.group(1))], text)
+
+
+def is_parse_error(error_text):
+	"""Telegram не принял разметку — тогда тот же текст уходит без неё."""
+	lowered = (error_text or "").lower()
+	return any(marker in lowered for marker in PARSE_ERROR_MARKERS)
+
+
 def pair_name(channel_doctype, channel_name, telegram_chat):
 	"""Имя записи AI Channel Chat — оно же ключ уникальности пары."""
 	return f"{channel_doctype}:{channel_name}:{telegram_chat}"

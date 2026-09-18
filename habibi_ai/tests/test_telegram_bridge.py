@@ -420,15 +420,37 @@ class TestОтправкаАккаунтом(IntegrationTestCase):
 	def test_личный_аккаунт_шлёт_через_user_client(self):
 		with patch("habibi_telegram.user_client.send_message") as send_message:
 			bridge.send(("Telegram Account", self.account), self.chat, "текст")
-		send_message.assert_called_once_with(self.account, CHAT_ID, "текст", automated=True)
+		send_message.assert_called_once_with(self.account, CHAT_ID, "текст", parse_mode="HTML", automated=True)
+
+	def test_разметка_модели_уходит_html(self):
+		with patch("habibi_telegram.user_client.send_message") as send_message:
+			bridge.send(("Telegram Account", self.account), self.chat, "**Бургеры:**\n- Classic & Cola")
+		# & экранирует общий фильтр habibi_telegram — ровно один раз
+		self.assertEqual(send_message.call_args.args[2], "<b>Бургеры:</b>\n• Classic &amp; Cola")
+
+	def test_неразобранная_разметка_уходит_текстом(self):
+		error = Exception("Bad Request: can't parse entities: Unsupported start tag")
+		with patch("habibi_telegram.user_client.send_message", side_effect=[error, None]) as send_message:
+			bridge.send(("Telegram Account", self.account), self.chat, "**жирный**")
+		retry = send_message.call_args_list[1]
+		self.assertEqual(retry.args[2], "**жирный**")
+		self.assertIsNone(retry.kwargs["parse_mode"])
+		self.assertTrue(retry.kwargs["automated"])
+
+	def test_бот_шлёт_html(self):
+		make_bot()
+		with patch("habibi_telegram.client.send_message") as send_message:
+			bridge.send(("Telegram Bot", BOT), self.chat, "**Меню**")
+		self.assertEqual(send_message.call_args.args[0], "<b>Меню</b>")
+		self.assertEqual(send_message.call_args.kwargs["parse_mode"], "HTML")
 
 	def test_длинный_ответ_аккаунтом_частями(self):
-		# user_client шлёт как есть, а Telegram не принимает больше 4096 символов
+		# Telegram не принимает больше 4096 символов, а HTML-теги добавляют длину
 		text = ("а" * 3000 + "\n") * 3
 		with patch("habibi_telegram.user_client.send_message") as send_message:
 			bridge.send(("Telegram Account", self.account), self.chat, text)
 		sent = [c.args[2] for c in send_message.call_args_list]
-		self.assertEqual(sent, decisions.split_text(text))
+		self.assertEqual(sent, decisions.split_text(text, bridge.PART_LIMIT))
 		self.assertGreater(len(sent), 1)
 		self.assertTrue(all(c.kwargs["automated"] for c in send_message.call_args_list))
 

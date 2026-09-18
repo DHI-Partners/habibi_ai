@@ -39,6 +39,9 @@ PENDING_LIMIT = 20
 # Сколько живёт отметка «ИИ отправляет в этот чат». С запасом на отправку и
 # запись: слушатель MTProto успевает записать наш ответ раньше reply_job.
 SENDING_MARKER_TTL = 60
+# Длина части ответа до перевода в HTML: теги добавляют символы, а Telegram
+# не примет сообщение длиннее 4096
+PART_LIMIT = 3500
 
 
 def validate_channel(doc, method=None):
@@ -379,19 +382,34 @@ def send(channel, chat, text):
 	"""Ответ тем же каналом, с пометкой «не человек» — иначе наш же ответ
 	поставил бы чат на паузу.
 
-	Аккаунтом — частями не длиннее 4096 символов: user_client шлёт текст
-	как есть, и длинный ответ Telegram не принял бы целиком.
+	Модель пишет Markdown, Telegram его не понимает — текст уходит HTML.
+	Частями, чтобы с тегами уложиться в 4096 символов. Если Telegram не
+	разобрал разметку, та же часть уходит простым текстом: лучше звёздочки,
+	чем клиент без ответа.
 	"""
 	chat_id = frappe.db.get_value("Telegram Chat", chat, "chat_id")
+	for part in decisions.split_text(text, PART_LIMIT):
+		try:
+			_send_part(channel, chat_id, decisions.to_telegram_html(part), "HTML")
+		except Exception as e:
+			if not decisions.is_parse_error(str(e)):
+				raise
+			_send_part(channel, chat_id, part, None)
+
+
+def _send_part(channel, chat_id, text, parse_mode):
 	if channel[0] == "Telegram Bot":
 		from habibi_telegram.client import send_message
 
-		send_message(text, from_bot=channel[1], chat_id=chat_id, automated=True)
+		# HTML чистит и экранирует сам client.send_message
+		send_message(text, parse_mode=parse_mode, from_bot=channel[1], chat_id=chat_id, automated=True)
 	else:
 		from habibi_telegram.user_client import send_message
+		from habibi_telegram.utils.formatting import strip_unsupported_html_tags
 
-		for part in decisions.split_text(text):
-			send_message(channel[1], chat_id, part, automated=True)
+		if parse_mode:
+			text = strip_unsupported_html_tags(text)
+		send_message(channel[1], chat_id, text, parse_mode=parse_mode, automated=True)
 
 
 def _mark_processed(pair, last):

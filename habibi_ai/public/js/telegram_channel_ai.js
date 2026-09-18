@@ -9,6 +9,11 @@
 		ai_enabled(frm) {
 			load_ai_bots(frm);
 		},
+		ai_bot(frm) {
+			// При выборе Autocomplete вписывает в поле значение (id); после
+			// перерисовки поле показывает подпись — название бота
+			frm.refresh_field("ai_bot");
+		},
 	});
 });
 
@@ -23,6 +28,9 @@ function load_ai_bots(frm) {
 		// Autocomplete читает df.options только при создании поля, а список
 		// приезжает позже — без set_data выпадашка остаётся пустой
 		frm.fields_dict.ai_bot.set_data(options);
+		// Поле уже отрисовало голый id: подпись по значению Autocomplete берёт
+		// из списка, а список пришёл после отрисовки
+		frm.refresh_field("ai_bot");
 		frm.__ai_bots_loaded = true;
 	});
 }

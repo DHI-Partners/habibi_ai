@@ -132,6 +132,43 @@ class TestГдеОтвечаетИИ(unittest.TestCase):
 		self.assertTrue(decisions.chat_allows_ai("385520093", None))
 
 
+class TestРазметкаTelegram(unittest.TestCase):
+	def test_меню_как_его_пишет_модель(self):
+		text = "Здравствуйте! В меню есть:\n\n**Бургеры:**\n- Classic Burger — 2490 KZT  \n- Cola 0.5 L — 690 KZT  \n\nЧто хотите заказать?"
+		self.assertEqual(
+			decisions.to_telegram_html(text),
+			"Здравствуйте! В меню есть:\n\n<b>Бургеры:</b>\n• Classic Burger — 2490 KZT\n• Cola 0.5 L — 690 KZT\n\nЧто хотите заказать?",
+		)
+
+	def test_заголовок_жирным(self):
+		self.assertEqual(decisions.to_telegram_html("## Меню"), "<b>Меню</b>")
+
+	def test_курсив(self):
+		self.assertEqual(decisions.to_telegram_html("*острый* и _сладкий_"), "<i>острый</i> и <i>сладкий</i>")
+
+	def test_список_звёздочками_не_курсив(self):
+		self.assertEqual(decisions.to_telegram_html("* Кола\n* Вода"), "• Кола\n• Вода")
+
+	def test_код_не_размечается_внутри(self):
+		self.assertEqual(decisions.to_telegram_html("`**x**`"), "<code>**x**</code>")
+		self.assertEqual(decisions.to_telegram_html("```\na **b**\n```"), "<pre>a **b**</pre>")
+
+	def test_ссылка(self):
+		self.assertEqual(
+			decisions.to_telegram_html("[меню](https://example.org/menu)"),
+			'<a href="https://example.org/menu">меню</a>',
+		)
+
+	def test_обычный_текст_не_трогаем(self):
+		for text in ("Привет, как дела?", "snake_case_name", "2 * 3 * 4 = 24", "a_b и c_d"):
+			with self.subTest(text):
+				self.assertEqual(decisions.to_telegram_html(text), text)
+
+	def test_ошибка_разбора_разметки(self):
+		self.assertTrue(decisions.is_parse_error("Bad Request: can't parse entities: Unsupported start tag"))
+		self.assertFalse(decisions.is_parse_error("Forbidden: bot was blocked by the user"))
+
+
 class TestРазбиение(unittest.TestCase):
 	def test_короткое_целиком(self):
 		self.assertEqual(decisions.split_text("привет", 10), ["привет"])
