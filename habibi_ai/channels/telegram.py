@@ -86,7 +86,10 @@ def channel_settings(channel_doctype, channel_name):
 	if not frappe.get_meta(channel_doctype).has_field("ai_enabled"):
 		return None
 	return frappe.db.get_value(
-		channel_doctype, channel_name, ["ai_enabled", "ai_bot", "notify_user"], as_dict=True
+		channel_doctype,
+		channel_name,
+		["ai_enabled", "ai_bot", "ai_reply_in_groups", "notify_user"],
+		as_dict=True,
 	)
 
 
@@ -117,7 +120,7 @@ def _on_message_insert(doc):
 	if not settings or not settings.ai_enabled:
 		return
 
-	if not _chat_is_answerable(doc.chat):
+	if not _chat_is_answerable(doc.chat, settings):
 		return
 
 	message = {
@@ -142,16 +145,12 @@ def _on_message_insert(doc):
 		enqueue_reply(channel, doc.chat)
 
 
-def _chat_is_answerable(chat):
-	"""Чат, в котором ИИ вообще уместен.
-
-	Служебный чат Telegram (коды входа) — никогда: коды не должны попасть к
-	LLM. Канал вещания — тоже: ответить подписчику там невозможно.
-	"""
+def _chat_is_answerable(chat, settings):
+	"""Чат, в котором ИИ вообще уместен — см. decisions.chat_allows_ai."""
 	row = frappe.db.get_value("Telegram Chat", chat, ["chat_id", "type"], as_dict=True)
 	if not row:
 		return False
-	return not decisions.is_service_chat(row.chat_id) and row.type != "channel"
+	return decisions.chat_allows_ai(row.chat_id, row.type, (settings or {}).get("ai_reply_in_groups"))
 
 
 def sending_marker(pair):
@@ -223,13 +222,15 @@ def pause(channel, chat, reason):
 	frappe.db.set_value(PAIR, pair.name, {"ai_paused": 1, "paused_reason": reason, "paused_on": now_datetime()})
 
 
-def pending_messages(channel, chat, last_processed=None):
+def pending_messages(channel, chat, last_processed=None, settings=None):
 	"""Входящие этого канала в чате после последнего отвеченного.
 
 	Берём последние PENDING_LIMIT и отбрасываем несвежие: на первом сообщении
 	пары last_processed пуст, и без этого в движок ушла бы вся история.
 	"""
-	if not _chat_is_answerable(chat):
+	if settings is None:
+		settings = channel_settings(*channel)
+	if not _chat_is_answerable(chat, settings):
 		return []
 
 	field = next(f for f, doctype in CHANNEL_FIELDS.items() if doctype == channel[0])
@@ -298,7 +299,7 @@ def _reply_round(channel, chat):
 	if pair.ai_paused:
 		return False
 
-	pending = pending_messages(channel, chat, pair.last_processed_message)
+	pending = pending_messages(channel, chat, pair.last_processed_message, settings)
 	if not pending:
 		return False
 

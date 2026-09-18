@@ -78,5 +78,16 @@ def install_telegram_fields():
 			"mandatory_depends_on": "ai_enabled",
 			"description": "Бот движка ИИ, который отвечает в этом канале",
 		},
+		{
+			# По умолчанию выключено: живой номер состоит в чужих группах, и
+			# ответ на каждое сообщение там — спам от имени владельца
+			"fieldname": "ai_reply_in_groups",
+			"fieldtype": "Check",
+			"label": "Отвечать в группах",
+			"insert_after": "ai_bot",
+			"depends_on": "ai_enabled",
+			"default": "0",
+			"description": "Без галки ИИ отвечает только в личных чатах",
+		},
 	]
 	create_custom_fields({doctype: fields for doctype in TELEGRAM_CHANNELS}, update=True)

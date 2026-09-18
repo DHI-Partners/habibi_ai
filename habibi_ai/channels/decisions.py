@@ -39,6 +39,9 @@ WRITE_FORBIDDEN_MARKERS = (
 # к LLM ни при каких настройках канала.
 SERVICE_CHAT_IDS = frozenset({"777000"})
 
+# Групповые чаты: ИИ в них отвечает только с разрешения канала
+GROUP_CHAT_TYPES = frozenset({"group", "supergroup"})
+
 # Предел длины текста одного сообщения в Telegram
 TELEGRAM_TEXT_LIMIT = 4096
 
@@ -102,6 +105,31 @@ def should_pause(message, now):
 
 def is_service_chat(chat_id):
 	return chat_id is not None and str(chat_id) in SERVICE_CHAT_IDS
+
+
+def chat_allows_ai(chat_id, chat_type, reply_in_groups=False):
+	"""Уместен ли ИИ в этом чате вообще.
+
+	Личный чат — да. Группа — только если канал явно разрешил: живой номер
+	состоит в чужих барахолках и новостных чатах, и ответ на каждое сообщение
+	каждого участника — спам от имени владельца и бан номера. Канал вещания и
+	служебный чат Telegram — никогда.
+
+	Тип бывает пуст, когда MTProto не прислал сущность чата; тогда решает знак
+	id: положительный в Telegram бывает только у пользователя, а неизвестную
+	группу считаем группой.
+	"""
+	if is_service_chat(chat_id):
+		return False
+	kind = chat_type
+	if not kind:
+		try:
+			kind = "private" if int(chat_id) > 0 else None
+		except (TypeError, ValueError):
+			kind = None
+	if kind == "private":
+		return True
+	return bool(reply_in_groups) and kind in GROUP_CHAT_TYPES
 
 
 def combine(contents):

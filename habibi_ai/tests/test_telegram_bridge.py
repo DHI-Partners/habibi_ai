@@ -42,7 +42,7 @@ class TestПоляКанала(IntegrationTestCase):
 			self.assertTrue(meta.has_field("ai_enabled"), doctype)
 			self.assertEqual(meta.get_field("ai_bot").fieldtype, "Autocomplete")
 			self.assertEqual(
-				frappe.db.count("Custom Field", {"dt": doctype, "fieldname": ["like", "ai_%"]}), 3
+				frappe.db.count("Custom Field", {"dt": doctype, "fieldname": ["like", "ai_%"]}), 4
 			)
 
 	def test_без_telegram_ничего_не_ставится(self):
@@ -250,6 +250,26 @@ class TestХук(_Base):
 		enqueue.assert_not_called()
 		self.assertFalse(frappe.db.exists(bridge.PAIR, decisions.pair_name(*self.channel, chat)))
 		self.assertEqual(bridge.pending_messages(self.channel, chat), [])
+
+	def test_в_группе_молчит_без_разрешения(self):
+		chat = make_chat("-1005559400")
+		frappe.db.set_value("Telegram Chat", chat, "type", "supergroup")
+		frappe.db.delete(bridge.PAIR, {"telegram_chat": chat})
+		with patch("frappe.enqueue") as enqueue:
+			incoming(chat, 18, "Продам велосипед")
+		enqueue.assert_not_called()
+		self.assertEqual(bridge.pending_messages(self.channel, chat), [])
+
+	def test_в_группе_отвечает_если_разрешено(self):
+		chat = make_chat("-1005559401")
+		frappe.db.set_value("Telegram Chat", chat, "type", "group")
+		frappe.db.set_value("Telegram Bot", BOT, "ai_reply_in_groups", 1)
+		try:
+			with patch("frappe.enqueue") as enqueue:
+				incoming(chat, 19, "Бот, что в меню?")
+			enqueue.assert_called_once()
+		finally:
+			frappe.db.set_value("Telegram Bot", BOT, "ai_reply_in_groups", 0)
 
 	def test_канал_вещания_не_трогаем(self):
 		chat = make_chat("-1005559300")

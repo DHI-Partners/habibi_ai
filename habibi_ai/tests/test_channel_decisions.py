@@ -105,6 +105,33 @@ class TestСлужебныйЧат(unittest.TestCase):
 				self.assertFalse(decisions.is_service_chat(chat_id))
 
 
+class TestГдеОтвечаетИИ(unittest.TestCase):
+	def test_личный_чат(self):
+		self.assertTrue(decisions.chat_allows_ai("385520093", "private"))
+
+	def test_группы_только_с_разрешением(self):
+		for chat_type in ("group", "supergroup"):
+			with self.subTest(chat_type):
+				self.assertFalse(decisions.chat_allows_ai("-1001325216994", chat_type))
+				self.assertTrue(decisions.chat_allows_ai("-1001325216994", chat_type, reply_in_groups=True))
+
+	def test_никогда(self):
+		cases = {
+			"канал вещания": ("-1001006840823", "channel", True),
+			"служебный чат": ("777000", "private", True),
+			"неизвестная группа без типа": ("-1001204445447", None, True),
+			"тип неизвестен и id мусорный": ("abc", None, True),
+		}
+		for name, (chat_id, chat_type, in_groups) in cases.items():
+			with self.subTest(name):
+				self.assertFalse(decisions.chat_allows_ai(chat_id, chat_type, reply_in_groups=in_groups))
+
+	def test_без_типа_решает_знак_id(self):
+		# MTProto не всегда присылает сущность чата — тогда тип пуст, а
+		# положительный id в Telegram бывает только у пользователя
+		self.assertTrue(decisions.chat_allows_ai("385520093", None))
+
+
 class TestРазбиение(unittest.TestCase):
 	def test_короткое_целиком(self):
 		self.assertEqual(decisions.split_text("привет", 10), ["привет"])
