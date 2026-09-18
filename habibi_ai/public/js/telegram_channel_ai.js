@@ -20,6 +20,9 @@ function load_ai_bots(frm) {
 			label: `${bot.name} (#${bot.id})`,
 		}));
 		frm.set_df_property("ai_bot", "options", options);
+		// Autocomplete читает df.options только при создании поля, а список
+		// приезжает позже — без set_data выпадашка остаётся пустой
+		frm.fields_dict.ai_bot.set_data(options);
 		frm.__ai_bots_loaded = true;
 	});
 }
