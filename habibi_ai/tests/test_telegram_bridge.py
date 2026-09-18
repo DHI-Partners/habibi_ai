@@ -411,3 +411,13 @@ class TestОтправкаАккаунтом(IntegrationTestCase):
 		self.assertEqual(sent, decisions.split_text(text))
 		self.assertGreater(len(sent), 1)
 		self.assertTrue(all(c.kwargs["automated"] for c in send_message.call_args_list))
+
+
+class TestКаналСообщения(IntegrationTestCase):
+	def test_аккаунт_важнее_бота(self):
+		# Сообщения аккаунтов до 1.3.8 несут бота по умолчанию в telegram_bot
+		message = frappe._dict(telegram_bot="какой-то-бот", telegram_account="менеджер")
+		self.assertEqual(bridge.channel_of(message), ("Telegram Account", "менеджер"))
+
+	def test_только_бот(self):
+		self.assertEqual(bridge.channel_of(frappe._dict(telegram_bot="бот")), ("Telegram Bot", "бот"))

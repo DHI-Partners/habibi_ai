@@ -21,7 +21,11 @@ REASON_OPERATOR = "Оператор ответил вручную"
 REASON_FORBIDDEN = "Нет прав писать"
 
 # Поле сообщения → доктайп канала. У входящего заполнено ровно одно.
-CHANNEL_FIELDS = {"telegram_bot": "Telegram Bot", "telegram_account": "Telegram Account"}
+#
+# Аккаунт проверяется первым: у сообщений аккаунтов, записанных до 1.3.8,
+# в telegram_bot стоит бот по умолчанию (frappe подставлял одноимённый
+# глобальный default), и ответ уходил бы ботом, которому писать нельзя.
+CHANNEL_FIELDS = {"telegram_account": "Telegram Account", "telegram_bot": "Telegram Bot"}
 
 # Люди пишут несколькими сообщениями подряд — ждём, пока допишут
 DEBOUNCE_SECONDS = 3
