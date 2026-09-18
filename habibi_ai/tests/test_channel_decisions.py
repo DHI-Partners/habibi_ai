@@ -37,6 +37,7 @@ class TestShouldReply(unittest.TestCase):
 			"голосовое": (message(content="[voice]"), ON, None, False),
 			"служебное": (message(content="[chatjoinedbylink]"), ON, None, False),
 			"старое": (message(sent_on=NOW - timedelta(minutes=6)), ON, None, False),
+			"команда боту": (message(content="/start"), ON, None, False),
 		}
 		for name, (msg, channel, pair, is_bot) in cases.items():
 			with self.subTest(name):
@@ -55,6 +56,75 @@ class TestShouldReply(unittest.TestCase):
 	def test_подпись_к_фото_это_текст(self):
 		self.assertTrue(decisions.should_reply(message(content="Сколько стоит это?"), ON, None, False, NOW))
 
+	def test_идёт_диалог_авторизации(self):
+		# Ответ на «введите email» — это данные для обработчика, не вопрос ИИ
+		self.assertFalse(decisions.should_reply(message(), ON, None, False, NOW, sender_in_dialogue=True))
+		self.assertFalse(decisions.is_replyable(message(), False, NOW, sender_in_dialogue=True))
+
+	def test_косая_черта_не_в_начале_не_команда(self):
+		self.assertTrue(decisions.should_reply(message(content="доставка 24/7?"), ON, None, False, NOW))
+
+
+def outgoing(**overrides):
+	base = {"direction": "Outgoing", "is_automated": 0, "sent_on": NOW - timedelta(seconds=5)}
+	base.update(overrides)
+	return base
+
+
+class TestShouldPause(unittest.TestCase):
+	def test_свежий_ручной_ответ_ставит_паузу(self):
+		self.assertTrue(decisions.should_pause(outgoing(), NOW))
+
+	def test_без_даты_считается_свежим(self):
+		self.assertTrue(decisions.should_pause(outgoing(sent_on=None), NOW))
+
+	def test_граница_свежести_включительно(self):
+		self.assertTrue(decisions.should_pause(outgoing(sent_on=NOW - decisions.FRESH_FOR), NOW))
+
+	def test_не_ставит(self):
+		cases = {
+			# Импорт истории пишет старые ответы оператора — это не повод
+			# выключать ИИ во всех диалогах
+			"старое": outgoing(sent_on=NOW - timedelta(minutes=6)),
+			"автоматическое": outgoing(is_automated=1),
+			"входящее": outgoing(direction="Incoming"),
+		}
+		for name, msg in cases.items():
+			with self.subTest(name):
+				self.assertFalse(decisions.should_pause(msg, NOW))
+
+
+class TestСлужебныйЧат(unittest.TestCase):
+	def test_коды_входа_telegram(self):
+		self.assertTrue(decisions.is_service_chat("777000"))
+		self.assertTrue(decisions.is_service_chat(777000))
+
+	def test_обычный_чат(self):
+		for chat_id in ("5559100", "-100777000", None, ""):
+			with self.subTest(chat_id):
+				self.assertFalse(decisions.is_service_chat(chat_id))
+
+
+class TestРазбиение(unittest.TestCase):
+	def test_короткое_целиком(self):
+		self.assertEqual(decisions.split_text("привет", 10), ["привет"])
+
+	def test_ровно_лимит_целиком(self):
+		self.assertEqual(decisions.split_text("a" * 10, 10), ["a" * 10])
+
+	def test_режет_по_переводу_строки(self):
+		self.assertEqual(decisions.split_text("aaaa\nbbbb\ncc", 10), ["aaaa\nbbbb", "cc"])
+
+	def test_без_переводов_строки_режет_по_лимиту(self):
+		self.assertEqual(decisions.split_text("a" * 25, 10), ["a" * 10, "a" * 10, "a" * 5])
+
+	def test_куски_не_длиннее_лимита_и_без_пустых(self):
+		text = "\n".join(["строка " * 50] * 40)
+		chunks = decisions.split_text(text)
+		self.assertTrue(all(0 < len(c) <= decisions.TELEGRAM_TEXT_LIMIT for c in chunks))
+		self.assertGreater(len(chunks), 1)
+		self.assertEqual("\n".join(chunks), text)
+
 
 class TestCombine(unittest.TestCase):
 	def test_склеивает_через_перевод_строки_без_пометок(self):
@@ -72,6 +142,7 @@ class TestПраваНаЗапись(unittest.TestCase):
 			"You can't write in this chat (caused by SendMessageRequest)",
 			"CHAT_WRITE_FORBIDDEN",
 			"Not enough rights in this chat",
+			"You're banned from sending messages in supergroups/channels (caused by SendMessageRequest)",
 		):
 			with self.subTest(text):
 				self.assertTrue(decisions.is_write_forbidden(text))

@@ -30,8 +30,17 @@ WRITE_FORBIDDEN_MARKERS = (
 	"user is deactivated",
 	"chat_admin_required",
 	"user_banned_in_channel",
+	# Так Telethon пересказывает USER_BANNED_IN_CHANNEL человеческим языком
+	"banned from sending",
 	"chat not found",
 )
+
+# Служебный чат Telegram: в нём приходят коды входа. Коды не должны попасть
+# к LLM ни при каких настройках канала.
+SERVICE_CHAT_IDS = frozenset({"777000"})
+
+# Предел длины текста одного сообщения в Telegram
+TELEGRAM_TEXT_LIMIT = 4096
 
 
 def text_of(content):
@@ -42,29 +51,57 @@ def text_of(content):
 	return text
 
 
-def is_replyable(message, sender_is_bot, now):
-	"""Годится ли само сообщение для ответа — без учёта настроек канала."""
+def is_fresh(message, now):
+	"""Не старше FRESH_FOR. Без даты — только записи бота до миграции;
+	вебхук приходит сразу, так что такие считаем свежими."""
+	sent_on = message.get("sent_on")
+	return sent_on is None or now - sent_on <= FRESH_FOR
+
+
+def is_replyable(message, sender_is_bot, now, sender_in_dialogue=False):
+	"""Годится ли само сообщение для ответа — без учёта настроек канала.
+
+	sender_in_dialogue — у отправителя идёт диалог с обработчиком бота
+	(авторизация): его сообщения — ответы на вопросы обработчика, а не ИИ.
+	"""
 	if message.get("direction") != "Incoming":
 		return False
 	# Два бота в группе иначе переписывались бы бесконечно
 	if sender_is_bot:
 		return False
-	if not text_of(message.get("content")):
+	if sender_in_dialogue:
 		return False
-	sent_on = message.get("sent_on")
-	# Без даты — только записи бота до миграции; вебхук приходит сразу
-	if sent_on is not None and now - sent_on > FRESH_FOR:
+	text = text_of(message.get("content"))
+	if not text:
 		return False
-	return True
+	# Команды разбирают обработчики бота; ответ ИИ поверх них — второй ответ
+	if text.startswith("/"):
+		return False
+	return is_fresh(message, now)
 
 
-def should_reply(message, channel, pair, sender_is_bot, now):
+def should_reply(message, channel, pair, sender_is_bot, now, sender_in_dialogue=False):
 	"""Ставить ли задачу ответа на только что записанное сообщение."""
 	if not channel or not channel.get("ai_enabled") or not channel.get("ai_bot"):
 		return False
 	if pair and pair.get("ai_paused"):
 		return False
-	return is_replyable(message, sender_is_bot, now)
+	return is_replyable(message, sender_is_bot, now, sender_in_dialogue)
+
+
+def should_pause(message, now):
+	"""Ставить ли чат на паузу из-за исходящего.
+
+	Только свежий ответ человека: импорт истории пишет старые ответы
+	оператора, и пауза на каждый выключила бы ИИ почти во всех диалогах.
+	"""
+	if message.get("direction") != "Outgoing" or message.get("is_automated"):
+		return False
+	return is_fresh(message, now)
+
+
+def is_service_chat(chat_id):
+	return chat_id is not None and str(chat_id) in SERVICE_CHAT_IDS
 
 
 def combine(contents):
@@ -79,6 +116,27 @@ def combine(contents):
 def is_write_forbidden(error_text):
 	lowered = (error_text or "").lower()
 	return any(marker in lowered for marker in WRITE_FORBIDDEN_MARKERS)
+
+
+def split_text(text, limit=TELEGRAM_TEXT_LIMIT):
+	"""Длинный ответ — несколько сообщений не длиннее limit.
+
+	Режем по последнему переводу строки в пределах лимита, чтобы не рвать
+	абзац посреди фразы; без переводов строки — ровно по лимиту. Перевод
+	строки на месте разреза уходит: он и так стал границей сообщений.
+	"""
+	chunks = []
+	while len(text) > limit:
+		cut = text.rfind("\n", 0, limit + 1)
+		if cut > 0:
+			chunks.append(text[:cut])
+			text = text[cut + 1 :]
+		else:
+			chunks.append(text[:limit])
+			text = text[limit:]
+	if text:
+		chunks.append(text)
+	return chunks
 
 
 def pair_name(channel_doctype, channel_name, telegram_chat):
