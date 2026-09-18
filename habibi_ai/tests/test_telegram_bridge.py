@@ -85,6 +85,27 @@ class TestПроверкаКанала(IntegrationTestCase):
 			bridge.validate_channel(self.bot)
 		get_client.assert_not_called()
 
+	def test_без_изменений_ИИ_движок_не_спрашивается(self):
+		# Сохранение карточки ради другого поля не должно зависеть от движка
+		frappe.db.set_value("Telegram Bot", BOT, {"ai_enabled": 1, "ai_bot": "3"})
+		bot = frappe.get_doc("Telegram Bot", BOT)
+		bot.notify_user = "Administrator"
+		with patch("habibi_ai.api.get_client") as get_client:
+			bot.save()
+		get_client.assert_not_called()
+
+	def test_недоступный_движок_понятной_ошибкой(self):
+		import requests
+
+		self.bot.ai_enabled = 1
+		self.bot.ai_bot = "3"
+		client = Mock()
+		client._check_bot = Mock(side_effect=requests.ConnectionError("Connection refused"))
+		with patch("habibi_ai.api.get_client", return_value=client):
+			with self.assertRaises(frappe.ValidationError) as cm:
+				bridge.validate_channel(self.bot)
+		self.assertIn("Движок ИИ недоступен", str(cm.exception))
+
 
 class TestПара(IntegrationTestCase):
 	def test_имя_пары_и_снятие_паузы(self):
@@ -112,18 +133,30 @@ def make_chat(chat_id=CHAT_ID):
 	return frappe.get_doc({"doctype": "Telegram Chat", "chat_id": chat_id, "title": "Клиент", "type": "private"}).insert().name
 
 
-def incoming(chat, message_id, text="Здравствуйте", minutes_ago=0):
+def incoming(chat, message_id, text="Здравствуйте", minutes_ago=0, from_user=None):
 	return frappe.get_doc({
 		"doctype": "Telegram Message", "chat": chat, "message_id": str(message_id), "direction": "Incoming",
 		"content": text, "telegram_bot": BOT, "sent_on": now_datetime() - timedelta(minutes=minutes_ago),
+		"from_user": from_user,
 	}).insert(ignore_permissions=True)
 
 
-def outgoing(chat, message_id, automated):
+def outgoing(chat, message_id, automated, minutes_ago=None):
+	sent_on = now_datetime() - timedelta(minutes=minutes_ago) if minutes_ago is not None else None
 	return frappe.get_doc({
 		"doctype": "Telegram Message", "chat": chat, "message_id": str(message_id), "direction": "Outgoing",
-		"content": "ответ", "telegram_bot": BOT, "is_automated": 1 if automated else 0,
+		"content": "ответ", "telegram_bot": BOT, "is_automated": 1 if automated else 0, "sent_on": sent_on,
 	}).insert(ignore_permissions=True)
+
+
+def make_user(user_id, conversation_state=""):
+	name = frappe.db.get_value("Telegram User", {"telegram_user_id": user_id})
+	if not name:
+		name = frappe.get_doc({
+			"doctype": "Telegram User", "telegram_user_id": user_id, "full_name": "Клиент",
+		}).insert(ignore_permissions=True).name
+	frappe.db.set_value("Telegram User", name, "conversation_state", conversation_state)
+	return name
 
 
 class _Base(IntegrationTestCase):
@@ -134,6 +167,11 @@ class _Base(IntegrationTestCase):
 		self.channel = ("Telegram Bot", BOT)
 		frappe.db.delete(bridge.PAIR, {"telegram_chat": self.chat})
 		frappe.db.delete("Telegram Message", {"chat": self.chat})
+		self.marker = bridge.sending_marker(decisions.pair_name(*self.channel, self.chat))
+		frappe.cache().delete_value(self.marker)
+
+	def tearDown(self):
+		frappe.cache().delete_value(self.marker)
 
 	@classmethod
 	def tearDownClass(cls):
@@ -180,12 +218,49 @@ class TestХук(_Base):
 		outgoing(self.chat, 5, automated=True)
 		self.assertFalse(frappe.db.get_value(bridge.PAIR, decisions.pair_name(*self.channel, self.chat), "ai_paused"))
 
-	def test_повторная_запись_нашего_ответа_паузы_не_ставит(self):
-		# Синхронизация MTProto не увидела закоммиченный ответ ИИ и записала
-		# его второй раз, без пометки
-		outgoing(self.chat, 9, automated=True)
+	def test_пока_ИИ_отправляет_ручное_исходящее_паузы_не_ставит(self):
+		# Слушатель MTProto записал наш же ответ раньше, чем reply_job, — без
+		# пометки is_automated
+		frappe.cache().set_value(self.marker, 1, expires_in_sec=60)
 		outgoing(self.chat, 9, automated=False)
 		self.assertFalse(frappe.db.get_value(bridge.PAIR, decisions.pair_name(*self.channel, self.chat), "ai_paused"))
+
+	def test_старое_ручное_исходящее_паузы_не_ставит(self):
+		# Импорт истории
+		outgoing(self.chat, 13, automated=False, minutes_ago=60)
+		self.assertFalse(frappe.db.get_value(bridge.PAIR, decisions.pair_name(*self.channel, self.chat), "ai_paused"))
+
+	def test_команда_не_ставит(self):
+		with patch("frappe.enqueue") as enqueue:
+			incoming(self.chat, 14, "/start")
+		enqueue.assert_not_called()
+
+	def test_посреди_диалога_авторизации_не_ставит(self):
+		user = make_user("5559200", '{"step": "email"}')
+		with patch("frappe.enqueue") as enqueue:
+			incoming(self.chat, 15, "me@example.com", from_user=user)
+		enqueue.assert_not_called()
+
+	def test_служебный_чат_telegram_не_трогаем(self):
+		chat = make_chat("777000")
+		frappe.db.delete(bridge.PAIR, {"telegram_chat": chat})
+		with patch("frappe.enqueue") as enqueue:
+			incoming(chat, 16, "Код входа: 12345")
+			outgoing(chat, 17, automated=False)
+		enqueue.assert_not_called()
+		self.assertFalse(frappe.db.exists(bridge.PAIR, decisions.pair_name(*self.channel, chat)))
+		self.assertEqual(bridge.pending_messages(self.channel, chat), [])
+
+	def test_канал_вещания_не_трогаем(self):
+		chat = make_chat("-1005559300")
+		frappe.db.set_value("Telegram Chat", chat, "type", "channel")
+		frappe.db.delete(bridge.PAIR, {"telegram_chat": chat})
+		with patch("frappe.enqueue") as enqueue:
+			incoming(chat, 18)
+			outgoing(chat, 19, automated=False)
+		enqueue.assert_not_called()
+		self.assertFalse(frappe.db.exists(bridge.PAIR, decisions.pair_name(*self.channel, chat)))
+		self.assertEqual(bridge.pending_messages(self.channel, chat), [])
 
 	def test_на_паузе_не_ставит(self):
 		outgoing(self.chat, 6, automated=False)
@@ -197,6 +272,15 @@ class TestХук(_Base):
 		with patch("habibi_ai.channels.telegram.channel_settings", side_effect=RuntimeError("сбой")):
 			doc = incoming(self.chat, 8)
 		self.assertTrue(frappe.db.exists("Telegram Message", doc.name))
+
+	def test_дедлок_и_таймаут_блокировки_пробрасываются(self):
+		# Транзакция уже откачена базой — проглоти мы ошибку, вызывающий
+		# закоммитил бы пустоту и потерял сообщения
+		for error in (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+			with self.subTest(error.__name__):
+				with patch("habibi_ai.channels.telegram._on_message_insert", side_effect=error("сбой")):
+					with self.assertRaises(error):
+						bridge.on_message_insert(Mock())
 
 
 class TestЗадача(_Base):
@@ -240,6 +324,29 @@ class TestЗадача(_Base):
 		reply = frappe.get_doc("Telegram Message", {"chat": self.chat, "message_id": "900"})
 		self.assertEqual(reply.is_automated, 1)
 
+	def test_перед_отправкой_ставится_маркер(self):
+		seen = []
+		with patch("frappe.enqueue"):
+			incoming(self.chat, 13)
+		original = bridge.send
+
+		def send(*args):
+			seen.append(frappe.cache().get_value(self.marker, use_local_cache=False))
+			return original(*args)
+
+		with patch("habibi_ai.channels.telegram.send", side_effect=send):
+			self._run()
+		self.assertEqual(seen, [1])
+
+	def test_ответ_команде_и_диалогу_авторизации_не_уходит_в_движок(self):
+		user = make_user("5559201", '{"step": "password"}')
+		with patch("frappe.enqueue"):
+			incoming(self.chat, 14, "секрет", from_user=user)
+			incoming(self.chat, 15, "/login")
+			incoming(self.chat, 16, "а доставка есть?")
+		_, turn, _ = self._run()
+		self.assertEqual(turn.call_args.args[2], "а доставка есть?")
+
 	def test_старая_история_не_уходит_в_движок(self):
 		with patch("frappe.enqueue"):
 			incoming(self.chat, 20, "вчерашнее", minutes_ago=60 * 24)
@@ -280,15 +387,27 @@ class TestЗадача(_Base):
 
 
 class TestОтправкаАккаунтом(IntegrationTestCase):
-	def test_личный_аккаунт_шлёт_через_user_client(self):
+	def setUp(self):
 		title = "ai-bridge-test-account"
-		account = frappe.db.get_value("Telegram Account", {"title": title})
-		if not account:
-			account = frappe.get_doc({
+		self.account = frappe.db.get_value("Telegram Account", {"title": title})
+		if not self.account:
+			self.account = frappe.get_doc({
 				"doctype": "Telegram Account", "title": title, "phone": "+70000000001",
 				"api_id": "1", "api_hash": "x",
 			}).insert().name
-		chat = make_chat()
+		self.chat = make_chat()
+
+	def test_личный_аккаунт_шлёт_через_user_client(self):
 		with patch("habibi_telegram.user_client.send_message") as send_message:
-			bridge.send(("Telegram Account", account), chat, "текст")
-		send_message.assert_called_once_with(account, CHAT_ID, "текст", automated=True)
+			bridge.send(("Telegram Account", self.account), self.chat, "текст")
+		send_message.assert_called_once_with(self.account, CHAT_ID, "текст", automated=True)
+
+	def test_длинный_ответ_аккаунтом_частями(self):
+		# user_client шлёт как есть, а Telegram не принимает больше 4096 символов
+		text = ("а" * 3000 + "\n") * 3
+		with patch("habibi_telegram.user_client.send_message") as send_message:
+			bridge.send(("Telegram Account", self.account), self.chat, text)
+		sent = [c.args[2] for c in send_message.call_args_list]
+		self.assertEqual(sent, decisions.split_text(text))
+		self.assertGreater(len(sent), 1)
+		self.assertTrue(all(c.kwargs["automated"] for c in send_message.call_args_list))

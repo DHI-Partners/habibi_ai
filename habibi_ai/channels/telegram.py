@@ -32,6 +32,9 @@ RETRY_DELAY_SECONDS = 30
 MAX_ROUNDS = 5
 LOCK_TIMEOUT = 600
 PENDING_LIMIT = 20
+# Сколько живёт отметка «ИИ отправляет в этот чат». С запасом на отправку и
+# запись: слушатель MTProto успевает записать наш ответ раньше reply_job.
+SENDING_MARKER_TTL = 60
 
 
 def validate_channel(doc, method=None):
@@ -51,12 +54,19 @@ def validate_channel(doc, method=None):
 	except (TypeError, ValueError):
 		frappe.throw(f"ИИ-бот указан неверно: {doc.ai_bot}")
 
+	# Движок спрашиваем, только когда меняли ИИ: иначе упавший движок не
+	# давал бы сохранить карточку канала ради любого другого поля
+	if not (doc.has_value_changed("ai_enabled") or doc.has_value_changed("ai_bot")):
+		return
+
 	from habibi_ai import api
 
 	try:
 		api.get_client()._check_bot(bot_id)
 	except BotNotFound:
 		frappe.throw("ИИ-бот не найден")
+	except (EngineError, requests.RequestException) as e:
+		frappe.throw(f"Движок ИИ недоступен: {e}")
 
 
 def channel_of(message):
@@ -81,9 +91,15 @@ def on_message_insert(doc, method=None):
 
 	Ошибка здесь не должна ронять запись сообщения: хук выполняется внутри
 	вебхука и синхронизации, и упавший ИИ стоил бы потерянной истории.
+
+	Кроме дедлока и таймаута блокировки: после них база уже откатила всю
+	транзакцию, и проглоти мы ошибку — вызывающий закоммитил бы пустоту,
+	посчитав сообщения записанными. Пусть он узнает и повторит.
 	"""
 	try:
 		_on_message_insert(doc)
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
 	except Exception:
 		frappe.log_error(title="ИИ: разбор сообщения Telegram", message=frappe.get_traceback())
 
@@ -97,45 +113,67 @@ def _on_message_insert(doc):
 	if not settings or not settings.ai_enabled:
 		return
 
+	if not _chat_is_answerable(doc.chat):
+		return
+
+	message = {
+		"direction": doc.direction,
+		"content": doc.content,
+		"is_automated": doc.get("is_automated"),
+		"sent_on": get_datetime(doc.sent_on) if doc.sent_on else None,
+	}
+	now = now_datetime()
+
 	if doc.direction == "Outgoing":
-		# Написал человек — дальше диалог ведёт он, ИИ не перебивает
-		if not doc.get("is_automated") and not _is_our_reply_again(doc):
+		# Написал человек — дальше диалог ведёт он, ИИ не перебивает. Пока
+		# ИИ сам отправляет в чат, «ручное» исходящее — это наш же ответ,
+		# записанный слушателем MTProto раньше, чем reply_job его пометил
+		if decisions.should_pause(message, now) and not _ai_is_sending(channel, doc.chat):
 			pause(channel, doc.chat, REASON_OPERATOR)
 		return
 
 	pair = frappe.db.get_value(PAIR, decisions.pair_name(*channel, doc.chat), ["ai_paused"], as_dict=True)
-	message = {
-		"direction": doc.direction,
-		"content": doc.content,
-		"sent_on": get_datetime(doc.sent_on) if doc.sent_on else None,
-	}
-	if decisions.should_reply(message, settings, pair, _sender_is_bot(doc.from_user), now_datetime()):
+	is_bot, in_dialogue = _sender_flags(doc.from_user)
+	if decisions.should_reply(message, settings, pair, is_bot, now, sender_in_dialogue=in_dialogue):
 		enqueue_reply(channel, doc.chat)
 
 
-def _is_our_reply_again(doc):
-	"""Это исходящее — повторная запись нашего же ответа?
+def _chat_is_answerable(chat):
+	"""Чат, в котором ИИ вообще уместен.
 
-	Синхронизация MTProto открывает снимок REPEATABLE READ до сетевых
-	вызовов: если reply_job закоммитил ответ в этом окне, дедупликация по
-	(chat, message_id) его не видит, и тот же ответ пишется второй раз, уже
-	без is_automated. Блокирующее чтение видит последние закоммиченные
-	строки — без него ИИ ставил бы паузу на собственный ответ.
+	Служебный чат Telegram (коды входа) — никогда: коды не должны попасть к
+	LLM. Канал вещания — тоже: ответить подписчику там невозможно.
 	"""
-	if not doc.get("message_id"):
+	row = frappe.db.get_value("Telegram Chat", chat, ["chat_id", "type"], as_dict=True)
+	if not row:
 		return False
+	return not decisions.is_service_chat(row.chat_id) and row.type != "channel"
+
+
+def sending_marker(pair):
+	return f"ai-sending:{pair}"
+
+
+def _ai_is_sending(channel, chat):
+	# Мимо локального кэша процесса: он не знает об отметке, поставленной
+	# задачей в другом процессе, и о её истечении
 	return bool(
-		frappe.db.sql(
-			"""select name from `tabTelegram Message`
-			where chat=%s and message_id=%s and name!=%s and is_automated=1
-			limit 1 lock in share mode""",
-			(doc.chat, doc.message_id, doc.name),
-		)
+		frappe.cache().get_value(sending_marker(decisions.pair_name(*channel, chat)), use_local_cache=False)
 	)
 
 
-def _sender_is_bot(telegram_user):
-	return bool(telegram_user and frappe.db.get_value("Telegram User", telegram_user, "is_bot"))
+def _sender_flags(telegram_user):
+	"""(бот ли отправитель, идёт ли у него диалог с обработчиком бота).
+
+	Непустой conversation_state — habibi_telegram ведёт с человеком диалог
+	(авторизация): его сообщения — ответы обработчику, а не вопросы ИИ.
+	"""
+	if not telegram_user:
+		return False, False
+	row = frappe.db.get_value("Telegram User", telegram_user, ["is_bot", "conversation_state"], as_dict=True)
+	if not row:
+		return False, False
+	return bool(row.is_bot), (row.conversation_state or "").strip() not in ("", "{}")
 
 
 def enqueue_reply(channel, chat):
@@ -187,6 +225,9 @@ def pending_messages(channel, chat, last_processed=None):
 	Берём последние PENDING_LIMIT и отбрасываем несвежие: на первом сообщении
 	пары last_processed пуст, и без этого в движок ушла бы вся история.
 	"""
+	if not _chat_is_answerable(chat):
+		return []
+
 	field = next(f for f, doctype in CHANNEL_FIELDS.items() if doctype == channel[0])
 	filters = {"chat": chat, field: channel[1], "direction": "Incoming"}
 	if last_processed:
@@ -202,15 +243,13 @@ def pending_messages(channel, chat, last_processed=None):
 		limit=PENDING_LIMIT,
 	)
 	now = now_datetime()
-	return [
-		row
-		for row in reversed(rows)
-		if decisions.is_replyable(
-			{"direction": row.direction, "content": row.content, "sent_on": row.sent_on},
-			_sender_is_bot(row.from_user),
-			now,
-		)
-	]
+	pending = []
+	for row in reversed(rows):
+		is_bot, in_dialogue = _sender_flags(row.from_user)
+		message = {"direction": row.direction, "content": row.content, "sent_on": row.sent_on}
+		if decisions.is_replyable(message, is_bot, now, sender_in_dialogue=in_dialogue):
+			pending.append(row)
+	return pending
 
 
 def reply_job(channel_doctype, channel_name, chat):
@@ -279,6 +318,9 @@ def _reply_round(channel, chat):
 		_mark_processed(pair, last)
 		return False
 
+	# До отправки, а не после: слушатель MTProto может записать наш ответ
+	# раньше, чем send() вернётся, и хук поставил бы паузу на него
+	frappe.cache().set_value(sending_marker(pair.name), 1, expires_in_sec=SENDING_MARKER_TTL)
 	try:
 		send(channel, chat, reply)
 	except Exception as e:
@@ -330,7 +372,11 @@ def _engine_chat(client, pair, bot_id, chat):
 
 def send(channel, chat, text):
 	"""Ответ тем же каналом, с пометкой «не человек» — иначе наш же ответ
-	поставил бы чат на паузу."""
+	поставил бы чат на паузу.
+
+	Аккаунтом — частями не длиннее 4096 символов: user_client шлёт текст
+	как есть, и длинный ответ Telegram не принял бы целиком.
+	"""
 	chat_id = frappe.db.get_value("Telegram Chat", chat, "chat_id")
 	if channel[0] == "Telegram Bot":
 		from habibi_telegram.client import send_message
@@ -339,7 +385,8 @@ def send(channel, chat, text):
 	else:
 		from habibi_telegram.user_client import send_message
 
-		send_message(channel[1], chat_id, text, automated=True)
+		for part in decisions.split_text(text):
+			send_message(channel[1], chat_id, part, automated=True)
 
 
 def _mark_processed(pair, last):
