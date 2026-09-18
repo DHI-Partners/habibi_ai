@@ -27,8 +27,8 @@ CHANNEL_FIELDS = {"telegram_bot": "Telegram Bot", "telegram_account": "Telegram 
 DEBOUNCE_SECONDS = 3
 RETRY_DELAY_SECONDS = 30
 # Сколько раз подряд отвечать в одной задаче, если пока шла генерация,
-# пришло ещё. Больше — это уже не «дописал», а живой диалог, и пусть его
-# ведёт следующая задача.
+# пришло ещё. Больше — это уже не «дописал», а живой диалог: то, что
+# осталось после последнего раунда, ждёт, пока клиент напишет снова.
 MAX_ROUNDS = 5
 LOCK_TIMEOUT = 600
 PENDING_LIMIT = 20
@@ -99,7 +99,7 @@ def _on_message_insert(doc):
 
 	if doc.direction == "Outgoing":
 		# Написал человек — дальше диалог ведёт он, ИИ не перебивает
-		if not doc.get("is_automated"):
+		if not doc.get("is_automated") and not _is_our_reply_again(doc):
 			pause(channel, doc.chat, REASON_OPERATOR)
 		return
 
@@ -111,6 +111,27 @@ def _on_message_insert(doc):
 	}
 	if decisions.should_reply(message, settings, pair, _sender_is_bot(doc.from_user), now_datetime()):
 		enqueue_reply(channel, doc.chat)
+
+
+def _is_our_reply_again(doc):
+	"""Это исходящее — повторная запись нашего же ответа?
+
+	Синхронизация MTProto открывает снимок REPEATABLE READ до сетевых
+	вызовов: если reply_job закоммитил ответ в этом окне, дедупликация по
+	(chat, message_id) его не видит, и тот же ответ пишется второй раз, уже
+	без is_automated. Блокирующее чтение видит последние закоммиченные
+	строки — без него ИИ ставил бы паузу на собственный ответ.
+	"""
+	if not doc.get("message_id"):
+		return False
+	return bool(
+		frappe.db.sql(
+			"""select name from `tabTelegram Message`
+			where chat=%s and message_id=%s and name!=%s and is_automated=1
+			limit 1 lock in share mode""",
+			(doc.chat, doc.message_id, doc.name),
+		)
+	)
 
 
 def _sender_is_bot(telegram_user):

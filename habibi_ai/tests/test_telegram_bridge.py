@@ -180,6 +180,13 @@ class TestХук(_Base):
 		outgoing(self.chat, 5, automated=True)
 		self.assertFalse(frappe.db.get_value(bridge.PAIR, decisions.pair_name(*self.channel, self.chat), "ai_paused"))
 
+	def test_повторная_запись_нашего_ответа_паузы_не_ставит(self):
+		# Синхронизация MTProto не увидела закоммиченный ответ ИИ и записала
+		# его второй раз, без пометки
+		outgoing(self.chat, 9, automated=True)
+		outgoing(self.chat, 9, automated=False)
+		self.assertFalse(frappe.db.get_value(bridge.PAIR, decisions.pair_name(*self.channel, self.chat), "ai_paused"))
+
 	def test_на_паузе_не_ставит(self):
 		outgoing(self.chat, 6, automated=False)
 		with patch("frappe.enqueue") as enqueue:
@@ -270,3 +277,18 @@ class TestЗадача(_Base):
 		bridge.pause(self.channel, self.chat, bridge.REASON_OPERATOR)
 		_, turn, _ = self._run()
 		turn.assert_not_called()
+
+
+class TestОтправкаАккаунтом(IntegrationTestCase):
+	def test_личный_аккаунт_шлёт_через_user_client(self):
+		title = "ai-bridge-test-account"
+		account = frappe.db.get_value("Telegram Account", {"title": title})
+		if not account:
+			account = frappe.get_doc({
+				"doctype": "Telegram Account", "title": title, "phone": "+70000000001",
+				"api_id": "1", "api_hash": "x",
+			}).insert().name
+		chat = make_chat()
+		with patch("habibi_telegram.user_client.send_message") as send_message:
+			bridge.send(("Telegram Account", account), chat, "текст")
+		send_message.assert_called_once_with(account, CHAT_ID, "текст", automated=True)
