@@ -7,14 +7,14 @@
 
 import frappe
 
-from habibi_ai import tools
+from habibi_ai import loop, tools
 from habibi_ai.engine import BotNotFound, ChatNotFound, EngineClient, EngineError
 
 # Сколько витков цикла допускается на один ход, когда бот не сказал иначе.
 # Исчерпание — ошибка, а не молчаливая остановка: модель, которая вызывает
 # инструменты и не приходит к ответу, не справляется с задачей имеющимися
 # средствами, и человек должен об этом узнать.
-MAX_LOOP = 8
+MAX_LOOP = loop.DEFAULT_MAX_LOOP
 
 # Ошибки движка, у которых есть понятное объяснение для пользователя. Ключ —
 # фрагмент сообщения от движка, значение — что показать в интерфейсе.
@@ -59,6 +59,8 @@ def call(method, *args, **kwargs):
 		# бота нет" должны выглядеть для клиента одинаково, иначе по ответу
 		# можно перебором узнать чужие id.
 		frappe.throw("Бот не найден", frappe.DoesNotExistError)
+	except (loop.BadStep, loop.LoopExhausted) as e:
+		frappe.throw(str(e))
 	except EngineError as e:
 		detail = str(e)
 		frappe.log_error(title="Ошибка движка ИИ", message=detail)
@@ -109,113 +111,39 @@ def get_bot_config(bot_id):
 
 @frappe.whitelist()
 def send_message(chat_id, message, bot_id=None):
-	"""Ведёт цикл: движок решает, мы исполняем, пока не получим текст.
+	"""Ход ведёт run_turn; здесь — гейт трассировки и перевод ошибок.
 
 	Флаг трассировки ставит сервер, а не клиент: в теле запроса от браузера
 	поля debug нет вообще — ровно так же, как там нет tenant.
 	"""
 	debug = DEBUG_ROLE in frappe.get_roles()
-	client = get_client()
+	result = call(run_turn, get_client(), int(chat_id), message, bot_id, debug)
+	response = {"success": True, "response": result["response"]}
+	if result["debug"]:
+		response["debug"] = result["debug"]
+	return response
 
-	# Лимит задаётся полем бота, а константа — только запасной вариант на
-	# случай пустого поля. Непригодное значение (ноль, минус, мусор из ручной
-	# правки) молча выродило бы цикл в одну ошибку «не смог ответить», поэтому
-	# в дело идёт только положительное целое.
-	configured = call(client.get_max_loop, int(chat_id), bot_id)
-	max_loop = configured if isinstance(configured, int) and configured > 0 else MAX_LOOP
 
-	turn = []
-	collected_debug = []
+def run_turn(client, chat_id, message, bot_id=None, debug=False):
+	"""Один ход агента — общий для браузера и каналов.
 
-	for iteration in range(1, max_loop + 1):
-		# Собственный шаг трассировки прокси, а не движка: номер витка и
-		# действующий лимит известны только здесь. Кладём его ДО обращения к
-		# движку за этот виток, чтобы он не подписывал чужие (движковые)
-		# данные, а шёл впереди них — иначе границы витков в трассировке было
-		# бы не видно (спека §8).
-		if debug:
-			collected_debug.append({"step": "loop", "data": {"iteration": iteration, "max_loop": max_loop}})
+	Ошибки движка и цикла пробрасываются как есть: браузеру их переводит в
+	человеческий текст call(), а канальный адаптер решает сам — повторить,
+	поставить чат на паузу или оповестить оператора.
 
-		# Набор, который прокси предлагает движку на этом ходу — тот же самый
-		# набор ниже сверяется с именем, которое движок попросит исполнить.
-		offered = _tool_names()
-
-		step = call(
-			client.step,
-			int(chat_id),
-			message,
-			bot_id,
-			turn=list(turn),
-			tools=tools.definitions(offered),
-			debug=debug,
-		)
-
-		if debug and step.get("debug"):
-			collected_debug.extend(step["debug"])
-
-		if step.get("type") == "text":
-			result = {"success": True, "response": step.get("content", "")}
-			if collected_debug:
-				result["debug"] = collected_debug
-			return result
-
-		# Контракт шага фиксирован движком, но проверяем его здесь: без этого
-		# чужой или устаревший ответ падал бы голым KeyError в логах прокси, и
-		# причину искали бы в habibi_ai вместо движка, который её и создал.
-		if step.get("type") != "tool_use" or not step.get("id") or not step.get("name"):
-			frappe.throw(f"Движок вернул шаг неизвестной формы: {step!r}")
-
-		# Вызов инструмента и его результат идут в turn парой — движку нужны
-		# оба, чтобы на следующем витке видеть, что именно уже было исполнено.
-		# В chat_messages они не попадают: это внутренняя кухня хода, а не
-		# история переписки с пользователем.
-		tool_use_entry = {
-			"type": "tool_use",
-			"id": step["id"],
-			"name": step["name"],
-			"input": step.get("input") or {},
-		}
-		# raw — содержимое ответа модели целиком, как его прислал движок.
-		# Прокси его не читает и не интерпретирует, только возит дальше:
-		# провайдеру нужно получить виток ассистента нетронутым (у моделей с
-		# адаптивным мышлением рядом с tool_use лежат блоки thinking, и
-		# собранный заново виток без них отвергается на следующем шаге).
-		# Если движок его не прислал — ключ не кладём вовсе, а не в None:
-		# отсутствие поля и пустое значение для движка не одно и то же.
-		if step.get("raw") is not None:
-			tool_use_entry["raw"] = step["raw"]
-		turn.append(tool_use_entry)
-
-		if step["name"] in offered:
-			result_content = tools.execute(step["name"], step.get("input") or {})
-		else:
-			# Движок — соседний сервис со своим циклом релизов и правом решать
-			# только "что можно предложить модели", а не "что можно исполнить
-			# под правами тенанта". Имя вне списка, который прокси сам отдал
-			# этому ходу, не должно исполняться никогда: безопасно только для
-			# read-only get_menu, но с инструментом, создающим заказы, —
-			# дыра. Модель получает отказ текстом, как и на неизвестное
-			# реестру имя, и может исправиться на следующем витке.
-			result_content = (
-				f"Инструмент {step['name']} не был предложен на этом ходу. "
-				f"Доступные: {', '.join(offered)}"
-			)
-			# Отказ должен быть виден не только модели, но и человеку в
-			# трассировке — иначе попытку движка выйти за предложенный набор
-			# заметят только по косвенным следам в переписке.
-			if debug:
-				collected_debug.append(
-					{"step": "tool_rejected", "data": {"name": step["name"], "offered": offered}}
-				)
-
-		turn.append({"type": "tool_result", "id": step["id"], "content": result_content})
-
-	# Предел исчерпан: модель зациклилась на вызовах инструментов и не пришла
-	# к ответу. Молчаливая остановка скрыла бы это — пользователь должен
-	# увидеть внятную ошибку, а не зависший чат.
-	frappe.throw(
-		f"Бот не смог завершить ответ за {max_loop} обращений к инструментам. "
-		"Проверьте инструкции сценариев в трассировке."
+	Лимит задаётся полем бота; бот тот же, что и в step: явный bot_id, иначе
+	бот чата.
+	"""
+	max_loop = loop.resolve_max_loop(client.get_max_loop(chat_id, bot_id), MAX_LOOP)
+	offered = _tool_names()
+	return loop.run(
+		lambda text, **kwargs: client.step(chat_id, text, bot_id, **kwargs),
+		message,
+		offered=offered,
+		definitions=tools.definitions(offered),
+		execute=tools.execute,
+		max_loop=max_loop,
+		debug=debug,
 	)
 
 
