@@ -26,9 +26,8 @@ after_app_install = "habibi_ai.setup.after_app_install"
 
 # Telegram как канал ИИ. Хуки на доктайпы habibi_telegram безвредны там, где
 # его нет: событий этих доктайпов на таком сайте просто не бывает.
-# Хук Telegram Message добавляется в Task 5 — вместе с функцией, иначе любая
-# запись сообщения падала бы на импорте.
 doc_events = {
+	"Telegram Message": {"after_insert": "habibi_ai.channels.telegram.on_message_insert"},
 	"Telegram Bot": {"validate": "habibi_ai.channels.telegram.validate_channel"},
 	"Telegram Account": {"validate": "habibi_ai.channels.telegram.validate_channel"},
 }
