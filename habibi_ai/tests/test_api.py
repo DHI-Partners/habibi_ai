@@ -19,6 +19,7 @@ class TestГейтТрассировки(unittest.TestCase):
 		# Цикл теперь ведёт api.send_message через client.step, а не через
 		# client.send_message — сигнатура и метод сменились в задаче 5.
 		client = Mock()
+		client.get_chat = Mock(return_value={"id": 1, "external_user": frappe.session.user})
 		client.step = Mock(return_value={"type": "text", "content": "ок"})
 		with patch("frappe.get_roles", return_value=roles):
 			with patch("habibi_ai.api.get_client", return_value=client):
@@ -85,6 +86,7 @@ class TestГейтКонфигурации(unittest.TestCase):
 class TestЦиклИнструментов(unittest.TestCase):
 	def _client_с_шагами(self, steps):
 		client = Mock()
+		client.get_chat = Mock(return_value={"id": 1, "external_user": frappe.session.user})
 		client.step = Mock(side_effect=steps)
 		return client
 
@@ -273,3 +275,49 @@ class TestЦиклИнструментов(unittest.TestCase):
 		sent = client.step.call_args.kwargs["tools"]
 		self.assertTrue(all("run" not in d for d in sent))
 		self.assertEqual({d["name"] for d in sent}, set(api._tool_names()))
+
+
+class TestЧужойЧат(unittest.TestCase):
+	"""В чатах движка теперь и переписка клиентов из Telegram — её не должен
+	читать и продолжать любой вошедший пользователь, подобрав номер чата.
+	Чужой чат обязан выглядеть так же, как несуществующий: иначе перебором
+	можно узнать, какие номера заняты.
+	"""
+
+	def _client(self, owner):
+		client = Mock()
+		client.get_chat = Mock(return_value={"id": 7, "external_user": owner})
+		client.get_messages = Mock(return_value=[{"role": "user", "content": "привет"}])
+		client.step = Mock(return_value={"type": "text", "content": "ок"})
+		return client
+
+	def test_свой_чат_открывается(self):
+		client = self._client(frappe.session.user)
+		with patch("habibi_ai.api.get_client", return_value=client):
+			result = api.get_chat(7)
+		self.assertEqual(result["chat"]["id"], 7)
+		self.assertEqual(len(result["messages"]), 1)
+
+	def test_чужой_чат_как_несуществующий(self):
+		client = self._client("telegram:Telegram Bot:shop:5559100")
+		with patch("habibi_ai.api.get_client", return_value=client):
+			with self.assertRaises(frappe.DoesNotExistError) as cm:
+				api.get_chat(7)
+		self.assertIn("Чат не найден", str(cm.exception))
+		client.get_messages.assert_not_called()
+
+	def test_в_свой_чат_пишется(self):
+		client = self._client(frappe.session.user)
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				result = api.send_message(7, "привет")
+		self.assertEqual(result["response"], "ок")
+
+	def test_в_чужой_чат_не_пишется(self):
+		client = self._client("telegram:Telegram Account:manager:5559100")
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with self.assertRaises(frappe.DoesNotExistError) as cm:
+					api.send_message(7, "привет")
+		self.assertIn("Чат не найден", str(cm.exception))
+		client.step.assert_not_called()

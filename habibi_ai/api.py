@@ -89,8 +89,22 @@ def create_chat(bot_id):
 @frappe.whitelist()
 def get_chat(chat_id):
 	client = get_client()
-	chat = call(client.get_chat, int(chat_id))
+	chat = call(_own_chat, client, int(chat_id))
 	return {"chat": chat, "messages": call(client.get_messages, int(chat_id))}
+
+
+def _own_chat(client, chat_id):
+	"""Чат движка, только если он принадлежит текущему пользователю.
+
+	Тенант движок проверяет сам, пользователя — нет. А в чатах тенанта
+	теперь и переписка клиентов из Telegram: без этой проверки любой
+	вошедший читал бы и продолжал её, подобрав номер. Чужой чат — тот же
+	ChatNotFound, что и несуществующий, по той же причине, что в engine.
+	"""
+	chat = client.get_chat(chat_id)
+	if chat.get("external_user") != frappe.session.user:
+		raise ChatNotFound(chat_id)
+	return chat
 
 
 @frappe.whitelist()
@@ -117,7 +131,9 @@ def send_message(chat_id, message, bot_id=None):
 	поля debug нет вообще — ровно так же, как там нет tenant.
 	"""
 	debug = DEBUG_ROLE in frappe.get_roles()
-	result = call(run_turn, get_client(), int(chat_id), message, bot_id, debug)
+	client = get_client()
+	call(_own_chat, client, int(chat_id))
+	result = call(run_turn, client, int(chat_id), message, bot_id, debug)
 	response = {"success": True, "response": result["response"]}
 	if result["debug"]:
 		response["debug"] = result["debug"]
