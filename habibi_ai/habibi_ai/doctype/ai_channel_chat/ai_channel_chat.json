@@ -1,0 +1,44 @@
+{
+ "actions": [],
+ "creation": "2026-09-18 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "channel_doctype",
+  "channel_name",
+  "telegram_chat",
+  "engine_chat_id",
+  "column_break_pause",
+  "ai_paused",
+  "paused_reason",
+  "paused_on",
+  "last_processed_message"
+ ],
+ "fields": [
+  {"fieldname": "channel_doctype", "fieldtype": "Link", "in_list_view": 1, "label": "Канал (тип)", "options": "DocType", "read_only": 1, "reqd": 1},
+  {"fieldname": "channel_name", "fieldtype": "Dynamic Link", "in_list_view": 1, "in_standard_filter": 1, "label": "Канал", "options": "channel_doctype", "read_only": 1, "reqd": 1},
+  {"fieldname": "telegram_chat", "fieldtype": "Link", "in_list_view": 1, "label": "Чат Telegram", "options": "Telegram Chat", "read_only": 1, "reqd": 1},
+  {"description": "customer_chats.id в движке ИИ", "fieldname": "engine_chat_id", "fieldtype": "Int", "label": "Чат в движке", "read_only": 1},
+  {"fieldname": "column_break_pause", "fieldtype": "Column Break"},
+  {"default": "0", "description": "ИИ не отвечает в этом чате", "fieldname": "ai_paused", "fieldtype": "Check", "in_list_view": 1, "in_standard_filter": 1, "label": "ИИ на паузе"},
+  {"depends_on": "ai_paused", "fieldname": "paused_reason", "fieldtype": "Select", "label": "Причина", "options": "\nОператор ответил вручную\nВыключено вручную\nНет прав писать", "read_only": 1},
+  {"depends_on": "ai_paused", "fieldname": "paused_on", "fieldtype": "Datetime", "label": "На паузе с", "read_only": 1},
+  {"fieldname": "last_processed_message", "fieldtype": "Link", "label": "Последнее отвеченное", "options": "Telegram Message", "read_only": 1}
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-18 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "AI Channel Chat",
+ "owner": "Administrator",
+ "permissions": [
+  {"delete": 1, "export": 1, "read": 1, "report": 1, "role": "System Manager", "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "telegram_chat",
+ "track_changes": 1
+}

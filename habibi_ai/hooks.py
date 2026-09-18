@@ -21,3 +21,19 @@ after_migrate = "habibi_ai.setup.after_migrate"
 fixtures = [
 	{"dt": "Role", "filters": [["name", "in", ["Habibi AI Debug"]]]},
 ]
+
+after_app_install = "habibi_ai.setup.after_app_install"
+
+# Telegram как канал ИИ. Хуки на доктайпы habibi_telegram безвредны там, где
+# его нет: событий этих доктайпов на таком сайте просто не бывает.
+# Хук Telegram Message добавляется в Task 5 — вместе с функцией, иначе любая
+# запись сообщения падала бы на импорте.
+doc_events = {
+	"Telegram Bot": {"validate": "habibi_ai.channels.telegram.validate_channel"},
+	"Telegram Account": {"validate": "habibi_ai.channels.telegram.validate_channel"},
+}
+
+doctype_js = {
+	"Telegram Bot": "public/js/telegram_channel_ai.js",
+	"Telegram Account": "public/js/telegram_channel_ai.js",
+}
