@@ -5,9 +5,12 @@
 не читается из запроса.
 """
 
+import uuid
+
 import frappe
 
 from habibi_ai import loop, tools
+from habibi_ai.tools.orders import mark_answered
 from habibi_ai.engine import BotNotFound, ChatNotFound, EngineClient, EngineError
 
 # Сколько витков цикла допускается на один ход, когда бот не сказал иначе.
@@ -134,13 +137,15 @@ def send_message(chat_id, message, bot_id=None):
 	client = get_client()
 	call(_own_chat, client, int(chat_id))
 	result = call(run_turn, client, int(chat_id), message, bot_id, debug)
+	# Ответ уходит этим же запросом — расчёт хода дошёл до человека
+	mark_answered(result["turn_id"])
 	response = {"success": True, "response": result["response"]}
 	if result["debug"]:
 		response["debug"] = result["debug"]
 	return response
 
 
-def run_turn(client, chat_id, message, bot_id=None, debug=False):
+def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=None, message_at=None):
 	"""Один ход агента — общий для браузера и каналов.
 
 	Ошибки движка и цикла пробрасываются как есть: браузеру их переводит в
@@ -149,18 +154,34 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False):
 
 	Лимит задаётся полем бота; бот тот же, что и в step: явный bot_id, иначе
 	бот чата.
+
+	context собирается здесь, на сервере, и уходит только инструментам: чей
+	это чат (channel_chat — канальный, если ход пришёл из канала) и какой это
+	ход. turn_id новый на каждый ход, message_at — когда пришло сообщение
+	клиента, на которое отвечает ход: по нему create_order узнаёт, что клиент
+	ответил уже после расчёта. Канал передаёт время своего последнего
+	входящего; консоль его не передаёт — там сообщение пришло сейчас.
 	"""
 	max_loop = loop.resolve_max_loop(client.get_max_loop(chat_id, bot_id), MAX_LOOP)
 	offered = _tool_names()
-	return loop.run(
+	context = {
+		"turn_id": uuid.uuid4().hex,
+		"engine_chat_id": chat_id,
+		"channel_chat": channel_chat,
+		"message_at": message_at or frappe.utils.now_datetime(),
+	}
+	result = loop.run(
 		lambda text, **kwargs: client.step(chat_id, text, bot_id, **kwargs),
 		message,
 		offered=offered,
 		definitions=tools.definitions(offered),
-		execute=tools.execute,
+		execute=lambda name, args: tools.execute(name, args, context),
 		max_loop=max_loop,
 		debug=debug,
 	)
+	# Канал отметит расчёты хода отправленными, когда ответ реально уйдёт
+	result["turn_id"] = context["turn_id"]
+	return result
 
 
 def _tool_names():

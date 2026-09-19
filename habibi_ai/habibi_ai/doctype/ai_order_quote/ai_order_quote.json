@@ -1,0 +1,189 @@
+{
+ "actions": [],
+ "autoname": "AIQ-.#####",
+ "creation": "2026-09-19 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "engine_chat_id",
+  "channel_doctype",
+  "channel_name",
+  "turn_id",
+  "column_break_chat",
+  "customer",
+  "customer_name",
+  "phone",
+  "order_section",
+  "fulfilment",
+  "delivery_zone",
+  "notes",
+  "items",
+  "totals_section",
+  "currency",
+  "total_taxes",
+  "grand_total",
+  "column_break_totals",
+  "expires_on",
+  "answered_at",
+  "sales_order"
+ ],
+ "fields": [
+  {
+   "fieldname": "engine_chat_id",
+   "fieldtype": "Int",
+   "label": "Чат движка",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "channel_doctype",
+   "fieldtype": "Link",
+   "label": "Тип канального чата",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "channel_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Канальный чат",
+   "options": "channel_doctype",
+   "read_only": 1
+  },
+  {
+   "fieldname": "turn_id",
+   "fieldtype": "Data",
+   "label": "Ход",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_chat",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Клиент",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Имя",
+   "read_only": 1
+  },
+  {
+   "fieldname": "phone",
+   "fieldtype": "Data",
+   "label": "Телефон",
+   "options": "Phone",
+   "read_only": 1
+  },
+  {
+   "fieldname": "order_section",
+   "fieldtype": "Section Break",
+   "label": "Заказ"
+  },
+  {
+   "fieldname": "fulfilment",
+   "fieldtype": "Select",
+   "label": "Получение",
+   "options": "Delivery\nPickup",
+   "read_only": 1
+  },
+  {
+   "description": "Имя зоны текстом: справочника Delivery Zone на сайте может не быть",
+   "fieldname": "delivery_zone",
+   "fieldtype": "Data",
+   "label": "Зона доставки",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Пожелания",
+   "read_only": 1
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Позиции",
+   "options": "AI Order Quote Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "totals_section",
+   "fieldtype": "Section Break",
+   "label": "Итог"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Валюта",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_taxes",
+   "fieldtype": "Currency",
+   "label": "Налоги",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "grand_total",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "К оплате",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_totals",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "expires_on",
+   "fieldtype": "Datetime",
+   "label": "Действует до",
+   "read_only": 1
+  },
+  {
+   "description": "Когда ответ с расчётом ушёл клиенту. Без отметки заказ не оформляется: клиент суммы не видел.",
+   "fieldname": "answered_at",
+   "fieldtype": "Datetime",
+   "label": "Отправлен клиенту",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Заказ",
+   "options": "Sales Order",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "links": [],
+ "modified": "2026-09-19 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "AI Order Quote",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "customer_name",
+ "track_changes": 0
+}

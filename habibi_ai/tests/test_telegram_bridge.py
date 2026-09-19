@@ -335,6 +335,11 @@ class TestЗадача(_Base):
 		client.create_chat.assert_called_once_with(3, f"telegram:Telegram Bot:{BOT}:{CHAT_ID}")
 		args = turn.call_args.args
 		self.assertEqual((args[1], args[2], args[3]), (42, "Здравствуйте\nхочу пиццу", 3))
+		self.assertEqual(turn.call_args.kwargs["channel_chat"], ("Telegram Chat", self.chat))
+		# «да» сравнивается с расчётом по времени последнего сообщения клиента
+		self.assertEqual(
+			turn.call_args.kwargs["message_at"], frappe.db.get_value("Telegram Message", last.name, "creation")
+		)
 		telegram_api.send_message.assert_called_once()
 
 		pair = frappe.get_doc(bridge.PAIR, decisions.pair_name(*self.channel, self.chat))
@@ -388,6 +393,25 @@ class TestЗадача(_Base):
 		pair = frappe.get_doc(bridge.PAIR, decisions.pair_name(*self.channel, self.chat))
 		self.assertEqual(pair.ai_paused, 1)
 		self.assertEqual(pair.paused_reason, bridge.REASON_FORBIDDEN)
+
+	def test_расчёт_отмечается_отправленным_только_после_отправки(self):
+		# create_order оформляет расчёт, только если ответ с ним дошёл до клиента
+		turn = Mock(return_value={"response": "ответ ИИ", "debug": [], "turn_id": "ход-1"})
+		with patch("frappe.enqueue"):
+			incoming(self.chat, 35)
+		with patch("habibi_ai.tools.orders.mark_answered") as mark:
+			self._run(run_turn=turn)
+		mark.assert_called_once_with("ход-1")
+
+	def test_сорванная_отправка_не_отмечает_расчёт(self):
+		from habibi_telegram.telegram_api import TelegramAPIError
+
+		turn = Mock(return_value={"response": "ответ ИИ", "debug": [], "turn_id": "ход-2"})
+		with patch("frappe.enqueue"):
+			incoming(self.chat, 36)
+		with patch("habibi_ai.tools.orders.mark_answered") as mark:
+			self._run(run_turn=turn, send_error=TelegramAPIError("Bad Gateway"))
+		mark.assert_not_called()
 
 	def test_исчерпан_лимит_оповещает_оператора(self):
 		with patch("frappe.enqueue"):

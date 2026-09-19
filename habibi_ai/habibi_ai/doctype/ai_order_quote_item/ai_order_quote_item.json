@@ -1,0 +1,26 @@
+{
+ "actions": [],
+ "creation": "2026-09-19 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["item_code", "item_name", "qty", "uom", "rate", "amount"],
+ "fields": [
+  {"fieldname": "item_code", "fieldtype": "Link", "in_list_view": 1, "label": "Позиция", "options": "Item", "reqd": 1},
+  {"fieldname": "item_name", "fieldtype": "Data", "in_list_view": 1, "label": "Название"},
+  {"fieldname": "qty", "fieldtype": "Float", "in_list_view": 1, "label": "Кол-во", "reqd": 1},
+  {"fieldname": "uom", "fieldtype": "Link", "label": "Ед.", "options": "UOM"},
+  {"fieldname": "rate", "fieldtype": "Currency", "in_list_view": 1, "label": "Цена"},
+  {"fieldname": "amount", "fieldtype": "Currency", "in_list_view": 1, "label": "Сумма"}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-19 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "AI Order Quote Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,31 @@
+{
+ "actions": [],
+ "autoname": "field:company",
+ "creation": "2026-09-19 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["company", "time_zone", "schedule_section", "schedule", "exceptions_section", "exceptions"],
+ "fields": [
+  {"fieldname": "company", "fieldtype": "Link", "in_list_view": 1, "label": "Компания", "options": "Company",
+   "reqd": 1, "unique": 1},
+  {"description": "Например Asia/Almaty. Пусто — пояс сайта. Нужен, когда заведение не в поясе сервера.",
+   "fieldname": "time_zone", "fieldtype": "Data", "label": "Часовой пояс"},
+  {"fieldname": "schedule_section", "fieldtype": "Section Break", "label": "По дням недели"},
+  {"fieldname": "schedule", "fieldtype": "Table", "label": "Расписание", "options": "Working Hours Slot"},
+  {"fieldname": "exceptions_section", "fieldtype": "Section Break", "label": "Исключения"},
+  {"fieldname": "exceptions", "fieldtype": "Table", "label": "Особые дни", "options": "Working Hours Exception"}
+ ],
+ "links": [],
+ "modified": "2026-09-19 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "Working Hours",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "read": 1, "role": "System Manager", "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -7,7 +7,9 @@ app_license = "mit"
 
 # Интерфейс модуля — раздел в habibi_ui (/ui/ai). Своей страницы в Desk у него
 # больше нет, поэтому без оболочки ставить его некуда.
-required_apps = ["habibi_ui"]
+# erpnext — потому что инструменты заказа и справочники ссылаются на Company,
+# Customer, Sales Order: без него миграция приложения падает на Link.
+required_apps = ["habibi_ui", "erpnext"]
 
 # Плитка модуля на рабочем столе создаётся кодом: из фикстур приложения
 # Frappe Desktop Icon не создаёт. Тем же хуком снимается пустой Workspace
@@ -36,3 +38,7 @@ doctype_js = {
 	"Telegram Bot": "public/js/telegram_channel_ai.js",
 	"Telegram Account": "public/js/telegram_channel_ai.js",
 }
+
+# Черновик заказа, созданный ботом, оператор должен мочь удалить: ссылка из
+# расчёта AI Order Quote иначе блокирует удаление Sales Order.
+ignore_links_on_delete = ["AI Order Quote"]
