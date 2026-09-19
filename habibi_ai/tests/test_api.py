@@ -141,11 +141,34 @@ class TestЦиклИнструментов(unittest.TestCase):
 				with patch("habibi_ai.tools.execute", return_value="шаурма — 350") as run:
 					result = api.send_message(1, "что есть?")
 
-		run.assert_called_once_with("get_menu", {})
+		run.assert_called_once()
+		name, args, context = run.call_args.args
+		self.assertEqual((name, args), ("get_menu", {}))
+		# Консоль отладки: канального чата нет, клиента узнают только по телефону
+		self.assertEqual(context["engine_chat_id"], 1)
+		self.assertIsNone(context["channel_chat"])
+		self.assertTrue(context["turn_id"])
 		self.assertEqual(result["response"], "шаурма 350")
 		# Результат инструмента ушёл во второй вызов движка.
 		turn = client.step.call_args_list[1].kwargs["turn"]
 		self.assertEqual(turn[1], {"type": "tool_result", "id": "t1", "content": "шаурма — 350"})
+
+	def test_каждый_ход_получает_свой_turn_id(self):
+		# create_order отказывает в том же ходе, что quote_order. Совпади
+		# turn_id у двух ходов — отказ сработал бы и там, где клиент уже
+		# ответил «да».
+		seen = []
+		for _ in range(2):
+			client = self._client_с_шагами([
+				{"type": "tool_use", "id": "t1", "name": "get_menu", "input": {}},
+				{"type": "text", "content": "ок"},
+			])
+			with patch("habibi_ai.tools.execute", return_value="меню") as run:
+				api.run_turn(client, 7, "что есть?", channel_chat=("Telegram Chat", "c1"))
+			seen.append(run.call_args.args[2])
+		self.assertNotEqual(seen[0]["turn_id"], seen[1]["turn_id"])
+		self.assertEqual(seen[0]["channel_chat"], ("Telegram Chat", "c1"))
+		self.assertEqual(seen[0]["engine_chat_id"], 7)
 
 	def test_raw_доезжает_до_следующего_шага(self):
 		# Движок может прислать content-блоки ответа модели целиком (thinking

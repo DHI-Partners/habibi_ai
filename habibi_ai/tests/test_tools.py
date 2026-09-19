@@ -187,3 +187,38 @@ class TestGetDeliveryZones(unittest.TestCase):
 		with self._frappe([]):
 			result = tools.execute("get_delivery_zones", {})
 		self.assertIn("Не называй", result)
+
+
+class TestКонтекст(unittest.TestCase):
+	"""Контекст хода кладёт сервер. Модель не может ни увидеть его, ни подменить:
+	из контекста инструмент заказа узнаёт чат, а значит — клиента."""
+
+	def setUp(self):
+		self._saved = dict(tools._REGISTRY)
+
+		@tools.tool("_с_контекстом", "тест", {"type": "object", "properties": {}}, context=True)
+		def _with(context, x=None):
+			return f"{context.get('turn_id')}|{x}"
+
+		@tools.tool("_без_контекста", "тест", {"type": "object", "properties": {}})
+		def _without(x=None):
+			return f"{x}"
+
+	def tearDown(self):
+		tools._REGISTRY.clear()
+		tools._REGISTRY.update(self._saved)
+
+	def test_инструмент_с_контекстом_получает_серверный(self):
+		self.assertEqual(tools.execute("_с_контекстом", {"x": 1}, {"turn_id": "t1"}), "t1|1")
+
+	def test_context_от_модели_отбрасывается(self):
+		result = tools.execute("_с_контекстом", {"context": {"turn_id": "чужой"}}, {"turn_id": "t1"})
+		self.assertEqual(result, "t1|None")
+
+	def test_инструмент_без_объявления_контекста_его_не_получает(self):
+		self.assertEqual(tools.execute("_без_контекста", {"x": 2}, {"turn_id": "t1"}), "2")
+
+	def test_контекст_не_виден_в_определениях(self):
+		definition = tools.definitions(["_с_контекстом"])[0]
+		self.assertNotIn("context", definition)
+		self.assertNotIn("run", definition)

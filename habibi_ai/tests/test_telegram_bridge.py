@@ -335,6 +335,7 @@ class TestЗадача(_Base):
 		client.create_chat.assert_called_once_with(3, f"telegram:Telegram Bot:{BOT}:{CHAT_ID}")
 		args = turn.call_args.args
 		self.assertEqual((args[1], args[2], args[3]), (42, "Здравствуйте\nхочу пиццу", 3))
+		self.assertEqual(turn.call_args.kwargs["channel_chat"], ("Telegram Chat", self.chat))
 		telegram_api.send_message.assert_called_once()
 
 		pair = frappe.get_doc(bridge.PAIR, decisions.pair_name(*self.channel, self.chat))

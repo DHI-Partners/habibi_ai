@@ -354,7 +354,9 @@ def _generate(pair, bot_id, text, chat):
 	for attempt in (1, 2):
 		try:
 			engine_chat_id = _engine_chat(client, pair, bot_id, chat)
-			return api.run_turn(client, engine_chat_id, text, bot_id)["response"]
+			return api.run_turn(
+				client, engine_chat_id, text, bot_id, channel_chat=("Telegram Chat", chat)
+			)["response"]
 		except ChatNotFound:
 			if attempt == 2:
 				raise

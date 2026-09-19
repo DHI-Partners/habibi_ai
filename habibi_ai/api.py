@@ -5,6 +5,8 @@
 не читается из запроса.
 """
 
+import uuid
+
 import frappe
 
 from habibi_ai import loop, tools
@@ -140,7 +142,7 @@ def send_message(chat_id, message, bot_id=None):
 	return response
 
 
-def run_turn(client, chat_id, message, bot_id=None, debug=False):
+def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=None):
 	"""Один ход агента — общий для браузера и каналов.
 
 	Ошибки движка и цикла пробрасываются как есть: браузеру их переводит в
@@ -149,15 +151,21 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False):
 
 	Лимит задаётся полем бота; бот тот же, что и в step: явный bot_id, иначе
 	бот чата.
+
+	context собирается здесь, на сервере, и уходит только инструментам: чей
+	это чат (channel_chat — канальный, если ход пришёл из канала) и какой это
+	ход. turn_id новый на каждый ход — по нему create_order узнаёт, что
+	клиент успел ответить после расчёта.
 	"""
 	max_loop = loop.resolve_max_loop(client.get_max_loop(chat_id, bot_id), MAX_LOOP)
 	offered = _tool_names()
+	context = {"turn_id": uuid.uuid4().hex, "engine_chat_id": chat_id, "channel_chat": channel_chat}
 	return loop.run(
 		lambda text, **kwargs: client.step(chat_id, text, bot_id, **kwargs),
 		message,
 		offered=offered,
 		definitions=tools.definitions(offered),
-		execute=tools.execute,
+		execute=lambda name, args: tools.execute(name, args, context),
 		max_loop=max_loop,
 		debug=debug,
 	)
