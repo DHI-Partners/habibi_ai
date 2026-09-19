@@ -19,11 +19,17 @@ ZONES = [
 	{"name": "North", "delivery_fee": 1200.0, "free_above": None},
 ]
 NOW = datetime(2026, 9, 21, 12, 0)
-CTX = {"engine_chat_id": 5, "turn_id": "t2"}
+CTX = {"engine_chat_id": 5, "turn_id": "t2", "message_at": NOW}
 
 
 def quote(**kw):
-	base = {"engine_chat_id": 5, "turn_id": "t1", "expires_on": NOW + timedelta(minutes=10), "sales_order": None}
+	base = {
+		"engine_chat_id": 5,
+		"turn_id": "t1",
+		"creation": NOW - timedelta(minutes=2),
+		"expires_on": NOW + timedelta(minutes=10),
+		"sales_order": None,
+	}
 	base.update(kw)
 	return base
 
@@ -110,6 +116,18 @@ class TestПроверкаРасчёта(unittest.TestCase):
 		with self.assertRaises(r.Refusal) as cm:
 			r.check_quote(quote(turn_id="t2"), CTX, NOW)
 		self.assertIn("дождись", str(cm.exception))
+
+	def test_сообщение_клиента_раньше_расчёта_отказ(self):
+		# «да» пришло, пока бот ещё считал: ход другой, но расчёт клиент не
+		# видел. Так же выглядит повтор хода после сбоя движка.
+		ctx = {**CTX, "message_at": NOW - timedelta(minutes=3)}
+		with self.assertRaises(r.Refusal) as cm:
+			r.check_quote(quote(), ctx, NOW)
+		self.assertIn("дождись", str(cm.exception))
+
+	def test_без_времени_сообщения_отказ(self):
+		with self.assertRaises(r.Refusal):
+			r.check_quote(quote(), {"engine_chat_id": 5, "turn_id": "t2"}, NOW)
 
 	def test_просроченный_отказ(self):
 		with self.assertRaises(r.Refusal) as cm:

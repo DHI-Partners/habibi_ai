@@ -109,6 +109,8 @@ def install_order_source_option():
 	if not name:
 		return
 	field = frappe.get_doc("Custom Field", name)
+	if field.fieldtype != "Select":
+		return
 	options = [o for o in (field.options or "").split("\n") if o]
 	if ORDER_SOURCE in options:
 		return

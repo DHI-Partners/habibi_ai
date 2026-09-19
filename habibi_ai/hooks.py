@@ -38,3 +38,7 @@ doctype_js = {
 	"Telegram Bot": "public/js/telegram_channel_ai.js",
 	"Telegram Account": "public/js/telegram_channel_ai.js",
 }
+
+# Черновик заказа, созданный ботом, оператор должен мочь удалить: ссылка из
+# расчёта AI Order Quote иначе блокирует удаление Sales Order.
+ignore_links_on_delete = ["AI Order Quote"]

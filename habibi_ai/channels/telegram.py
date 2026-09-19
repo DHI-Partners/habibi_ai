@@ -308,9 +308,12 @@ def _reply_round(channel, chat):
 
 	text = decisions.combine(row.content for row in pending)
 	last = pending[-1].name
+	# Время записи, а не sent_on: сравнивается с созданием расчёта, и оба
+	# должны быть по одним часам — серверным
+	message_at = frappe.db.get_value("Telegram Message", last, "creation")
 
 	try:
-		reply = _generate(pair, int(settings.ai_bot), text, chat)
+		reply = _generate(pair, int(settings.ai_bot), text, chat, message_at)
 	except LoopExhausted as e:
 		_report(channel, chat, str(e), notify_user=settings.notify_user)
 		_mark_processed(pair, last)
@@ -342,7 +345,7 @@ def _reply_round(channel, chat):
 	return True
 
 
-def _generate(pair, bot_id, text, chat):
+def _generate(pair, bot_id, text, chat, message_at=None):
 	"""Ход агента с одной повторной попыткой на сбой движка.
 
 	Чат движка мог быть удалён в админке — тогда заводим новый: история
@@ -355,7 +358,12 @@ def _generate(pair, bot_id, text, chat):
 		try:
 			engine_chat_id = _engine_chat(client, pair, bot_id, chat)
 			return api.run_turn(
-				client, engine_chat_id, text, bot_id, channel_chat=("Telegram Chat", chat)
+				client,
+				engine_chat_id,
+				text,
+				bot_id,
+				channel_chat=("Telegram Chat", chat),
+				message_at=message_at,
 			)["response"]
 		except ChatNotFound:
 			if attempt == 2:

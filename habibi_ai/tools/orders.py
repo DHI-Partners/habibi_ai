@@ -2,8 +2,9 @@
 
 Модель ведёт разговор, но цифр не называет и заказ не собирает: состав
 сверяется с каталогом, итог и налог считает ERPNext, клиент берётся из чата
-или телефона. create_order получает только номер расчёта — в ERP уходит то,
-что зачитали клиенту, — и не срабатывает в том же ходе, что расчёт.
+или телефона. create_order аргументов не принимает вовсе: оформляет последний
+расчёт чата — ровно то, что зачитали клиенту, — и только если сообщение
+клиента пришло после расчёта.
 """
 
 import frappe
@@ -93,6 +94,10 @@ def build_sales_order(settings, lines, customer=None):
 		)
 	if settings.tax:
 		so.set("taxes", get_taxes_and_charges("Sales Taxes and Charges Template", settings.tax))
+	# set_missing_values — тот же путь, что проходит вставка: ставки налогов
+	# по позициям (Item Tax Template) и по клиенту. Без него расчёт считал бы
+	# одну сумму, а заказ при вставке — другую. Переданные цены он не трогает.
+	so.set_missing_values()
 	so.calculate_taxes_and_totals()
 	return so
 
@@ -256,7 +261,8 @@ def _quote(context, items, fulfilment, zone, customer_name, phone, notes):
 		parts.append(warning)
 	parts.append(
 		"Зачитай клиенту состав и итог и спроси, оформлять ли. После его явного согласия вызови "
-		f"create_order с quote_id «{quote.name}». Если клиент что-то меняет — сделай новый quote_order."
+		"create_order. Если клиент что-то меняет — сделай новый quote_order: оформляется только "
+		"последний расчёт."
 	)
 	return "\n".join(parts)
 
@@ -264,28 +270,53 @@ def _quote(context, items, fulfilment, zone, customer_name, phone, notes):
 @tool(
 	name="create_order",
 	description=(
-		"Оформляет заказ по расчёту quote_order — черновиком, который подтвердит оператор. "
-		"Вызывай только после явного согласия клиента на зачитанный расчёт. "
-		"Говори «заказ оформлен» только пересказом ответа этого инструмента."
+		"Оформляет последний расчёт quote_order в этом чате — черновиком, который подтвердит оператор. "
+		"Вызывай только после явного согласия клиента на зачитанный расчёт. Аргументов нет: "
+		"оформляется ровно то, что зачитано. Говори «заказ оформлен» только пересказом ответа "
+		"этого инструмента."
 	),
-	input_schema={
-		"type": "object",
-		"properties": {"quote_id": {"type": "string", "description": "Номер расчёта из ответа quote_order"}},
-		"required": ["quote_id"],
-	},
+	input_schema={"type": "object", "properties": {}},
 	context=True,
 )
-def create_order(context, quote_id=None):
+def create_order(context):
 	try:
-		return _create(context, quote_id)
+		return _create(context)
 	except Refusal as e:
 		return str(e)
 
 
-def _create(context, quote_id):
-	quote = frappe.get_doc(QUOTE, quote_id) if quote_id and frappe.db.exists(QUOTE, quote_id) else None
+def _latest_quote(context):
+	"""Последний расчёт чата, с блокировкой строки.
+
+	Номер расчёта модель передать не может: результаты инструментов в историю
+	чата не попадают, и на следующем ходу, когда клиент сказал «да», его уже
+	не видно. А годен и так только последний: изменил клиент заказ — новый
+	расчёт, и прежний оформлять нельзя.
+
+	for_update — чтобы два одновременных «да» не создали два заказа: второй
+	дождётся коммита первого и увидит заполненный sales_order.
+	"""
+	chat = context.get("engine_chat_id")
+	if not chat:
+		return None
+	names = frappe.get_all(
+		QUOTE, filters={"engine_chat_id": chat}, order_by="creation desc", limit_page_length=1, pluck="name"
+	)
+	if not names:
+		return None
+	frappe.db.get_value(QUOTE, names[0], "name", for_update=True)
+	return frappe.get_doc(QUOTE, names[0])
+
+
+def _create(context):
+	quote = _latest_quote(context)
 	verdict = rules.check_quote(quote.as_dict() if quote else None, context, now_datetime())
 	if verdict == "done":
+		if not frappe.db.exists("Sales Order", quote.sales_order):
+			raise Refusal(
+				f"Заказ {quote.sales_order} по этому расчёту был удалён оператором. Не оформляй его "
+				"заново сам — предложи клиенту связаться с оператором."
+			)
 		return _order_text(frappe.get_doc("Sales Order", quote.sales_order), quote, repeated=True)
 
 	settings = load_settings()
@@ -293,8 +324,10 @@ def _create(context, quote_id):
 	# остаться ни нового клиента, ни привязки к нему
 	frappe.db.savepoint("create_order")
 	try:
-		customer = quote.customer or customers.find_by_phone(quote.phone) or customers.create(
-			quote.customer_name, quote.phone
+		customer = (
+			quote.customer
+			or customers.find_by_phone(quote.phone, quote.customer_name)
+			or customers.create(quote.customer_name, quote.phone)
 		)
 		if quote.channel_doctype and quote.channel_name:
 			customers.link_chat((quote.channel_doctype, quote.channel_name), customer)
@@ -303,9 +336,22 @@ def _create(context, quote_id):
 			for r in quote.items
 		]
 		so = build_sales_order(settings, lines, customer)
+		# Сверка до записи, а не после: заказ на сумму, которую клиент не
+		# слышал, — это уже испорченный заказ, как ни объясняй его потом.
+		# Цены те же, что в расчёте, так что разойтись может налог — например,
+		# налоговая категория найденного клиента.
+		if abs(payable(so) - float(quote.grand_total)) >= 0.01:
+			raise Refusal(
+				f"Итог изменился: в расчёте было {rules.money(quote.grand_total)}, сейчас "
+				f"{rules.money(payable(so))} {so.currency}. Заказ не оформлен. Сделай новый quote_order "
+				"и зачитай клиенту новый итог."
+			)
 		_set_optional_fields(so, quote)
 		so.insert(ignore_permissions=True)
 		quote.db_set("sales_order", so.name)
+	except Refusal:
+		frappe.db.rollback(save_point="create_order")
+		raise
 	except Exception as e:
 		frappe.db.rollback(save_point="create_order")
 		frappe.log_error(title="create_order", message=frappe.get_traceback())
@@ -314,13 +360,7 @@ def _create(context, quote_id):
 			"предложи связаться с оператором."
 		) from e
 
-	text = _order_text(so, quote)
-	if abs(payable(so) - float(quote.grand_total)) >= 0.01:
-		text += (
-			f"\nВнимание: итог изменился — в расчёте было {rules.money(quote.grand_total)}, в заказе "
-			f"{rules.money(payable(so))} {so.currency}. Назови клиенту новую сумму."
-		)
-	return text
+	return _order_text(so, quote)
 
 
 def _set_optional_fields(so, quote):

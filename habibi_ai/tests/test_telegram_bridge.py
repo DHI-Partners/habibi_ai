@@ -336,6 +336,10 @@ class TestЗадача(_Base):
 		args = turn.call_args.args
 		self.assertEqual((args[1], args[2], args[3]), (42, "Здравствуйте\nхочу пиццу", 3))
 		self.assertEqual(turn.call_args.kwargs["channel_chat"], ("Telegram Chat", self.chat))
+		# «да» сравнивается с расчётом по времени последнего сообщения клиента
+		self.assertEqual(
+			turn.call_args.kwargs["message_at"], frappe.db.get_value("Telegram Message", last.name, "creation")
+		)
 		telegram_api.send_message.assert_called_once()
 
 		pair = frappe.get_doc(bridge.PAIR, decisions.pair_name(*self.channel, self.chat))

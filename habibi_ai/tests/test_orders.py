@@ -4,8 +4,12 @@
 и свой прайс-лист — чтобы не зависеть от того, что заведено на dev-сайте.
 """
 
+import itertools
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
+from frappe.utils import add_to_date, now_datetime
 
 from habibi_ai import tools
 
@@ -117,8 +121,18 @@ def _setup_erp():
 	frappe.db.set_single_value("Habibi AI Settings", "company", CO)
 
 
-def ctx(turn, chat=501, channel=None):
-	return {"turn_id": turn, "engine_chat_id": chat, "channel_chat": channel}
+_chats = itertools.count(1000)
+
+
+def ctx(turn, chat, channel=None, message_at=None):
+	"""Контекст хода. message_at по умолчанию — сейчас: клиент ответил после
+	всего, что уже создано в базе."""
+	return {
+		"turn_id": turn,
+		"engine_chat_id": chat,
+		"channel_chat": channel,
+		"message_at": message_at or now_datetime(),
+	}
 
 
 ORDER = {
@@ -139,8 +153,16 @@ class TestЗаказ(IntegrationTestCase):
 		super().setUpClass()
 		_setup_erp()
 
+	def setUp(self):
+		# Свой чат на тест: create_order берёт последний расчёт чата, и
+		# расчёты соседних тестов не должны в него попадать
+		self.chat = next(_chats)
+
 	def _quote(self, turn="t1", **kw):
-		return tools.execute("quote_order", {**ORDER, **kw}, ctx(turn))
+		return tools.execute("quote_order", {**ORDER, **kw}, ctx(turn, self.chat))
+
+	def _create(self, turn="t2", **kw):
+		return tools.execute("create_order", {}, ctx(turn, self.chat, **kw))
 
 	def test_расчёт_считает_итог_и_ндс_в_erp(self):
 		text = self._quote()
@@ -149,44 +171,109 @@ class TestЗаказ(IntegrationTestCase):
 		self.assertIn("Test Cola × 2 — 1 380 KZT", text)
 		self.assertIn("Клиент: Тест Клиент, +77019990011", text)
 		quote = frappe.get_doc("AI Order Quote", quote_id(text))
-		self.assertEqual((quote.grand_total, quote.engine_chat_id, quote.turn_id), (3870, 501, "t1"))
+		self.assertEqual((quote.grand_total, quote.engine_chat_id, quote.turn_id), (3870, self.chat, "t1"))
 
 	def test_заказ_в_том_же_ходе_отклоняется(self):
 		qid = quote_id(self._quote(turn="t1"))
-		result = tools.execute("create_order", {"quote_id": qid}, ctx("t1"))
-		self.assertIn("дождись", result)
+		self.assertIn("дождись", self._create(turn="t1"))
+		self.assertFalse(frappe.db.get_value("AI Order Quote", qid, "sales_order"))
+
+	def test_да_пришедшее_до_расчёта_отклоняется(self):
+		# Клиент написал «да», пока бот ещё считал: ход другой, расчёта он не видел
+		qid = quote_id(self._quote())
+		self.assertIn("дождись", self._create(message_at=add_to_date(now_datetime(), hours=-1)))
 		self.assertFalse(frappe.db.get_value("AI Order Quote", qid, "sales_order"))
 
 	def test_заказ_создаёт_черновик_с_суммой_расчёта(self):
 		qid = quote_id(self._quote())
-		result = tools.execute("create_order", {"quote_id": qid}, ctx("t2"))
+		result = self._create()
 		so_name = frappe.db.get_value("AI Order Quote", qid, "sales_order")
 		self.assertIn(f"Заказ {so_name} создан — черновик", result)
 		so = frappe.get_doc("Sales Order", so_name)
 		self.assertEqual((so.docstatus, so.company, so.grand_total), (0, CO, 3870))
 		self.assertEqual(frappe.db.get_value("Customer", so.customer, "mobile_no"), PHONE)
 
+	def test_оформляется_последний_расчёт_чата(self):
+		# Номер расчёта модель на следующем ходу не видит — результаты
+		# инструментов в историю не попадают. И клиент мог поменять заказ:
+		# годен только последний расчёт.
+		self._quote()
+		last = quote_id(self._quote(items=[{"item_code": COLA, "qty": 3}]))
+		self._create()
+		so_name = frappe.db.get_value("AI Order Quote", last, "sales_order")
+		items = frappe.get_all("Sales Order Item", filters={"parent": so_name}, fields=["item_code", "qty"])
+		self.assertEqual([(i.item_code, i.qty) for i in items], [(COLA, 3)])
+
 	def test_повтор_не_создаёт_второй_заказ(self):
-		qid = quote_id(self._quote())
-		first = tools.execute("create_order", {"quote_id": qid}, ctx("t2"))
+		self._quote()
+		first = self._create(turn="t2")
 		before = frappe.db.count("Sales Order", {"company": CO})
-		second = tools.execute("create_order", {"quote_id": qid}, ctx("t3"))
+		second = self._create(turn="t3")
 		self.assertEqual(frappe.db.count("Sales Order", {"company": CO}), before)
 		self.assertIn("уже создан", second)
 		self.assertEqual(first.split()[1], second.split()[1])
 
-	def test_клиент_находится_по_телефону_а_не_заводится_заново(self):
-		tools.execute("create_order", {"quote_id": quote_id(self._quote())}, ctx("t2"))
+	def test_без_расчёта_в_чате_отказ(self):
+		self.assertIn("Расчёт не найден", self._create())
+
+	def test_клиент_находится_по_телефону_и_имени(self):
+		self._quote()
+		self._create()
 		customers_before = frappe.db.count("Customer")
-		# Тот же номер, записанный иначе, — тот же человек
-		qid = quote_id(self._quote(customer_name="Другое Имя", phone="+7 701 999 00 11"))
-		tools.execute("create_order", {"quote_id": qid}, ctx("t4"))
+		self.chat = next(_chats)
+		# Тот же человек, номер записан иначе
+		self._quote(customer_name="тест клиент", phone="+7 701 999 00 11")
+		self._create()
 		self.assertEqual(frappe.db.count("Customer"), customers_before)
 
-	def test_чужой_чат_не_видит_расчёт(self):
+	def test_чужое_имя_с_тем_же_телефоном_не_получает_чужого_клиента(self):
+		# Номер телефона — не пароль: назвавший чужой номер не должен получить
+		# ни заказ на чужую карточку, ни её данные
+		self._quote()
+		self._create()
+		original = frappe.db.get_value("Customer", {"mobile_no": PHONE, "customer_name": "Тест Клиент"})
+		self.chat = next(_chats)
+		qid = quote_id(self._quote(customer_name="Другое Имя"))
+		self._create()
+		so_customer = frappe.db.get_value(
+			"Sales Order", frappe.db.get_value("AI Order Quote", qid, "sales_order"), "customer"
+		)
+		self.assertNotEqual(so_customer, original)
+		self.assertEqual(frappe.db.get_value("Customer", so_customer, "customer_name"), "Другое Имя")
+
+	def test_изменившийся_итог_не_создаёт_заказ(self):
+		self._quote()
+		customers_before = frappe.db.count("Customer")
+		orders_before = frappe.db.count("Sales Order", {"company": CO})
+		with patch("habibi_ai.tools.orders.payable", return_value=1.0):
+			result = self._create()
+		self.assertIn("итог изменился", result.lower())
+		self.assertEqual(frappe.db.count("Sales Order", {"company": CO}), orders_before)
+		self.assertEqual(frappe.db.count("Customer"), customers_before)
+
+	def test_сбой_вставки_откатывает_клиента_и_не_помечает_расчёт(self):
+		qid = quote_id(self._quote(customer_name="Откат Тестов", phone="+77010000077"))
+		with patch(
+			"habibi_ai.tools.orders._set_optional_fields", side_effect=frappe.ValidationError("сбой")
+		):
+			result = self._create()
+		self.assertIn("Не удалось оформить", result)
+		self.assertIn("Не говори клиенту", result)
+		self.assertFalse(frappe.db.exists("Customer", {"customer_name": "Откат Тестов"}))
+		self.assertFalse(frappe.db.get_value("AI Order Quote", qid, "sales_order"))
+
+	def test_просроченный_расчёт_отклоняется(self):
 		qid = quote_id(self._quote())
-		result = tools.execute("create_order", {"quote_id": qid}, ctx("t2", chat=999))
-		self.assertIn("не найден", result)
+		frappe.db.set_value("AI Order Quote", qid, "expires_on", add_to_date(now_datetime(), minutes=-1))
+		self.assertIn("устарел", self._create())
+
+	def test_удалённый_оператором_черновик(self):
+		# Оператор удаляет черновик — ссылка из расчёта не должна мешать, а
+		# бот не должен падать на повторе
+		qid = quote_id(self._quote())
+		self._create()
+		frappe.delete_doc("Sales Order", frappe.db.get_value("AI Order Quote", qid, "sales_order"))
+		self.assertIn("удалён оператором", self._create(turn="t3"))
 
 	def test_неизвестная_позиция_не_доходит_до_erp(self):
 		before = frappe.db.count("AI Order Quote")
@@ -221,14 +308,17 @@ class TestПривязкаЧата(IntegrationTestCase):
 			{"doctype": "Telegram Chat", "chat_id": "990011", "type": "private", "title": "Тест"}
 		).insert(ignore_permissions=True)
 		channel = ("Telegram Chat", chat.name)
+		engine_chat = next(_chats)
 
-		text = tools.execute("quote_order", ORDER, ctx("t1", channel=channel))
-		tools.execute("create_order", {"quote_id": quote_id(text)}, ctx("t2", channel=channel))
+		tools.execute(
+			"quote_order", {**ORDER, "customer_name": "Привязка Чата"}, ctx("t1", engine_chat, channel)
+		)
+		tools.execute("create_order", {}, ctx("t2", engine_chat, channel))
 
 		links = frappe.get_doc("Telegram Chat", chat.name).links
-		self.assertEqual([(r.link_doctype) for r in links], ["Customer"])
+		self.assertEqual([r.link_doctype for r in links], ["Customer"])
 
 		again = tools.execute(
-			"quote_order", {"items": ORDER["items"], "fulfilment": "pickup"}, ctx("t3", channel=channel)
+			"quote_order", {"items": ORDER["items"], "fulfilment": "pickup"}, ctx("t3", engine_chat, channel)
 		)
-		self.assertIn("Клиент: Тест Клиент", again)
+		self.assertIn("Клиент: Привязка Чата", again)

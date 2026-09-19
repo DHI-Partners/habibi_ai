@@ -7,6 +7,7 @@
 """
 
 import unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 import frappe
@@ -148,6 +149,8 @@ class TestЦиклИнструментов(unittest.TestCase):
 		self.assertEqual(context["engine_chat_id"], 1)
 		self.assertIsNone(context["channel_chat"])
 		self.assertTrue(context["turn_id"])
+		# Консоль: сообщение человека пришло в момент хода
+		self.assertIsNotNone(context["message_at"])
 		self.assertEqual(result["response"], "шаурма 350")
 		# Результат инструмента ушёл во второй вызов движка.
 		turn = client.step.call_args_list[1].kwargs["turn"]
@@ -169,6 +172,16 @@ class TestЦиклИнструментов(unittest.TestCase):
 		self.assertNotEqual(seen[0]["turn_id"], seen[1]["turn_id"])
 		self.assertEqual(seen[0]["channel_chat"], ("Telegram Chat", "c1"))
 		self.assertEqual(seen[0]["engine_chat_id"], 7)
+
+	def test_время_сообщения_канала_доезжает_до_контекста(self):
+		client = self._client_с_шагами([
+			{"type": "tool_use", "id": "t1", "name": "get_menu", "input": {}},
+			{"type": "text", "content": "ок"},
+		])
+		sent = datetime(2026, 9, 21, 12, 0)
+		with patch("habibi_ai.tools.execute", return_value="меню") as run:
+			api.run_turn(client, 7, "да", channel_chat=("Telegram Chat", "c1"), message_at=sent)
+		self.assertEqual(run.call_args.args[2]["message_at"], sent)
 
 	def test_raw_доезжает_до_следующего_шага(self):
 		# Движок может прислать content-блоки ответа модели целиком (thinking

@@ -23,22 +23,30 @@ def linked_customer(channel_chat):
 	return None
 
 
-def find_by_phone(phone):
-	"""Customer с тем же номером; сравнение — по нормализованной форме.
+def find_by_phone(phone, customer_name):
+	"""Customer с тем же номером и тем же именем, или None.
 
-	В базе номера лежат как ввели: «+966 55 214 8890», «+77015550104». LIKE по
-	последним цифрам сужает выборку, окончательно сравнивает normalize_phone.
+	Имя обязательно совпадает: номер телефона — не пароль. По одному
+	продиктованному чужому номеру нельзя получить ни заказ на чужую карточку,
+	ни её данные в следующих расчётах. Не совпало — заводится новый клиент,
+	дубль сольёт оператор.
+
+	В базе номера лежат как ввели: «+7 701 555-01-04», «+77015550104», поэтому
+	сравниваются нормализованные формы, а не строки в запросе.
 	"""
-	digits = phone.lstrip("+")
+	wanted = str(customer_name or "").strip().casefold()
 	candidates = frappe.get_all(
 		"Customer",
-		filters={"disabled": 0, "mobile_no": ["like", f"%{digits[-4:]}"]},
-		fields=["name", "mobile_no"],
+		filters={"disabled": 0, "mobile_no": ["is", "set"]},
+		fields=["name", "customer_name", "mobile_no"],
 		order_by="creation asc",
 		limit_page_length=0,
 	)
 	for candidate in candidates:
-		if normalize_phone(candidate.mobile_no) == phone:
+		if (
+			normalize_phone(candidate.mobile_no) == phone
+			and str(candidate.customer_name or "").strip().casefold() == wanted
+		):
 			return candidate.name
 	return None
 
