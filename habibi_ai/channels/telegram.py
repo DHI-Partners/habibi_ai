@@ -313,7 +313,8 @@ def _reply_round(channel, chat):
 	message_at = frappe.db.get_value("Telegram Message", last, "creation")
 
 	try:
-		reply = _generate(pair, int(settings.ai_bot), text, chat, message_at)
+		result = _generate(pair, int(settings.ai_bot), text, chat, message_at)
+		reply = result["response"]
 	except LoopExhausted as e:
 		_report(channel, chat, str(e), notify_user=settings.notify_user)
 		_mark_processed(pair, last)
@@ -341,6 +342,10 @@ def _reply_round(channel, chat):
 		_mark_processed(pair, last)
 		return False
 
+	# После отправки, а не до: не дошедший до клиента расчёт оформлять нельзя
+	from habibi_ai.tools.orders import mark_answered
+
+	mark_answered(result.get("turn_id"))
 	_mark_processed(pair, last)
 	return True
 
@@ -364,7 +369,7 @@ def _generate(pair, bot_id, text, chat, message_at=None):
 				bot_id,
 				channel_chat=("Telegram Chat", chat),
 				message_at=message_at,
-			)["response"]
+			)
 		except ChatNotFound:
 			if attempt == 2:
 				raise

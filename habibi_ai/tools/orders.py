@@ -152,7 +152,9 @@ def _who(context, customer_name, phone):
 	normalized = rules.normalize_phone(phone)
 	if not normalized:
 		raise Refusal(f"«{phone}» не похоже на номер телефона. Переспроси номер вместе с кодом страны.")
-	return None, name, normalized
+	# Знакомого клиента — уже в расчёт: его налоговая категория меняет итог, и
+	# без него сверка в create_order отказывала бы на каждом новом расчёте
+	return customers.find_by_phone(normalized, name), name, normalized
 
 
 QUOTE_SCHEMA = {
@@ -285,6 +287,25 @@ def create_order(context):
 		return str(e)
 
 
+def mark_answered(turn_id):
+	"""Отметить расчёты хода как дошедшие до клиента.
+
+	Вызывает канал после фактической отправки ответа, консоль — вернув ответ.
+	Не отправилось — отметки нет, и create_order откажет: клиент не видел, на
+	что соглашается.
+	"""
+	if not turn_id:
+		return
+	# IS NULL запросом, а не фильтром «not set»: тот сравнивает ещё и с
+	# пустой строкой, и строгий режим MariaDB отвергает это для Datetime
+	quote = frappe.qb.DocType(QUOTE)
+	(
+		frappe.qb.update(quote)
+		.set(quote.answered_at, now_datetime())
+		.where((quote.turn_id == turn_id) & quote.answered_at.isnull())
+	).run()
+
+
 def _latest_quote(context):
 	"""Последний расчёт чата, с блокировкой строки.
 
@@ -304,8 +325,10 @@ def _latest_quote(context):
 	)
 	if not names:
 		return None
-	frappe.db.get_value(QUOTE, names[0], "name", for_update=True)
-	return frappe.get_doc(QUOTE, names[0])
+	# Сам документ — блокирующим чтением: в REPEATABLE READ обычное чтение
+	# после ожидания блокировки видело бы старый снимок с пустым sales_order,
+	# а блокирующее видит последнюю закоммиченную версию
+	return frappe.get_doc(QUOTE, names[0], for_update=True)
 
 
 def _create(context):

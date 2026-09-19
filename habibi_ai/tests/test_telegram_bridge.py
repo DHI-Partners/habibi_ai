@@ -394,6 +394,25 @@ class TestЗадача(_Base):
 		self.assertEqual(pair.ai_paused, 1)
 		self.assertEqual(pair.paused_reason, bridge.REASON_FORBIDDEN)
 
+	def test_расчёт_отмечается_отправленным_только_после_отправки(self):
+		# create_order оформляет расчёт, только если ответ с ним дошёл до клиента
+		turn = Mock(return_value={"response": "ответ ИИ", "debug": [], "turn_id": "ход-1"})
+		with patch("frappe.enqueue"):
+			incoming(self.chat, 35)
+		with patch("habibi_ai.tools.orders.mark_answered") as mark:
+			self._run(run_turn=turn)
+		mark.assert_called_once_with("ход-1")
+
+	def test_сорванная_отправка_не_отмечает_расчёт(self):
+		from habibi_telegram.telegram_api import TelegramAPIError
+
+		turn = Mock(return_value={"response": "ответ ИИ", "debug": [], "turn_id": "ход-2"})
+		with patch("frappe.enqueue"):
+			incoming(self.chat, 36)
+		with patch("habibi_ai.tools.orders.mark_answered") as mark:
+			self._run(run_turn=turn, send_error=TelegramAPIError("Bad Gateway"))
+		mark.assert_not_called()
+
 	def test_исчерпан_лимит_оповещает_оператора(self):
 		with patch("frappe.enqueue"):
 			incoming(self.chat, 40)

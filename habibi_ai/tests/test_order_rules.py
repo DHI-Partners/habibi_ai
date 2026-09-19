@@ -27,6 +27,7 @@ def quote(**kw):
 		"engine_chat_id": 5,
 		"turn_id": "t1",
 		"creation": NOW - timedelta(minutes=2),
+		"answered_at": NOW - timedelta(minutes=1),
 		"expires_on": NOW + timedelta(minutes=10),
 		"sales_order": None,
 	}
@@ -124,6 +125,18 @@ class TestПроверкаРасчёта(unittest.TestCase):
 		with self.assertRaises(r.Refusal) as cm:
 			r.check_quote(quote(), ctx, NOW)
 		self.assertIn("дождись", str(cm.exception))
+
+	def test_да_вдогонку_до_отправки_расчёта_отказ(self):
+		# Расчёт создан, но бот его ещё не отправил, а клиент уже написал «да»:
+		# суммы он не видел. Сравнивается с отправкой, а не с созданием.
+		ctx = {**CTX, "message_at": NOW - timedelta(seconds=90)}
+		with self.assertRaises(r.Refusal):
+			r.check_quote(quote(), ctx, NOW)
+
+	def test_неотправленный_расчёт_отказ(self):
+		# Отправка клиенту сорвалась — расчёта он не видел вовсе
+		with self.assertRaises(r.Refusal):
+			r.check_quote(quote(answered_at=None), CTX, NOW)
 
 	def test_без_времени_сообщения_отказ(self):
 		with self.assertRaises(r.Refusal):

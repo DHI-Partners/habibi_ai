@@ -12,6 +12,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_to_date, now_datetime
 
 from habibi_ai import tools
+from habibi_ai.tools import orders
 
 CO = "_Habibi Test Co"
 PRICE_LIST = "_Habibi Test Menu"
@@ -158,8 +159,12 @@ class TestЗаказ(IntegrationTestCase):
 		# расчёты соседних тестов не должны в него попадать
 		self.chat = next(_chats)
 
-	def _quote(self, turn="t1", **kw):
-		return tools.execute("quote_order", {**ORDER, **kw}, ctx(turn, self.chat))
+	def _quote(self, turn="t1", sent=True, **kw):
+		text = tools.execute("quote_order", {**ORDER, **kw}, ctx(turn, self.chat))
+		if sent:
+			# Канал отмечает расчёт, когда ответ с ним ушёл клиенту
+			orders.mark_answered(turn)
+		return text
 
 	def _create(self, turn="t2", **kw):
 		return tools.execute("create_order", {}, ctx(turn, self.chat, **kw))
@@ -183,6 +188,19 @@ class TestЗаказ(IntegrationTestCase):
 		qid = quote_id(self._quote())
 		self.assertIn("дождись", self._create(message_at=add_to_date(now_datetime(), hours=-1)))
 		self.assertFalse(frappe.db.get_value("AI Order Quote", qid, "sales_order"))
+
+	def test_не_отправленный_клиенту_расчёт_не_оформляется(self):
+		# Отправка сорвалась — клиент суммы не видел, его «да» было не на неё
+		qid = quote_id(self._quote(sent=False))
+		self.assertIn("дождись", self._create())
+		self.assertFalse(frappe.db.get_value("AI Order Quote", qid, "sales_order"))
+
+	def test_да_вдогонку_до_отправки_расчёта_отклоняется(self):
+		# Расчёт создан, клиент написал «да», и только потом ответ ушёл
+		self._quote(sent=False)
+		early = now_datetime()
+		orders.mark_answered("t1")
+		self.assertIn("дождись", self._create(message_at=early))
 
 	def test_заказ_создаёт_черновик_с_суммой_расчёта(self):
 		qid = quote_id(self._quote())
@@ -313,6 +331,7 @@ class TestПривязкаЧата(IntegrationTestCase):
 		tools.execute(
 			"quote_order", {**ORDER, "customer_name": "Привязка Чата"}, ctx("t1", engine_chat, channel)
 		)
+		orders.mark_answered("t1")
 		tools.execute("create_order", {}, ctx("t2", engine_chat, channel))
 
 		links = frappe.get_doc("Telegram Chat", chat.name).links

@@ -156,6 +156,16 @@ class TestЦиклИнструментов(unittest.TestCase):
 		turn = client.step.call_args_list[1].kwargs["turn"]
 		self.assertEqual(turn[1], {"type": "tool_result", "id": "t1", "content": "шаурма — 350"})
 
+	def test_консоль_отмечает_расчёты_хода_отправленными(self):
+		# В консоли ответ уходит этим же запросом: расчёт хода дошёл до человека
+		client = self._client_с_шагами([{"type": "text", "content": "привет"}])
+		with patch("frappe.get_roles", return_value=[]):
+			with patch("habibi_ai.api.get_client", return_value=client):
+				with patch("habibi_ai.api.mark_answered") as mark:
+					api.send_message(1, "привет")
+		mark.assert_called_once()
+		self.assertTrue(mark.call_args.args[0])
+
 	def test_каждый_ход_получает_свой_turn_id(self):
 		# create_order отказывает в том же ходе, что quote_order. Совпади
 		# turn_id у двух ходов — отказ сработал бы и там, где клиент уже

@@ -10,6 +10,7 @@ import uuid
 import frappe
 
 from habibi_ai import loop, tools
+from habibi_ai.tools.orders import mark_answered
 from habibi_ai.engine import BotNotFound, ChatNotFound, EngineClient, EngineError
 
 # Сколько витков цикла допускается на один ход, когда бот не сказал иначе.
@@ -136,6 +137,8 @@ def send_message(chat_id, message, bot_id=None):
 	client = get_client()
 	call(_own_chat, client, int(chat_id))
 	result = call(run_turn, client, int(chat_id), message, bot_id, debug)
+	# Ответ уходит этим же запросом — расчёт хода дошёл до человека
+	mark_answered(result["turn_id"])
 	response = {"success": True, "response": result["response"]}
 	if result["debug"]:
 		response["debug"] = result["debug"]
@@ -167,7 +170,7 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 		"channel_chat": channel_chat,
 		"message_at": message_at or frappe.utils.now_datetime(),
 	}
-	return loop.run(
+	result = loop.run(
 		lambda text, **kwargs: client.step(chat_id, text, bot_id, **kwargs),
 		message,
 		offered=offered,
@@ -176,6 +179,9 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 		max_loop=max_loop,
 		debug=debug,
 	)
+	# Канал отметит расчёты хода отправленными, когда ответ реально уйдёт
+	result["turn_id"] = context["turn_id"]
+	return result
 
 
 def _tool_names():
