@@ -72,3 +72,4 @@ def execute(name, args, context=None):
 
 from habibi_ai.tools import menu  # noqa: E402,F401  регистрация при импорте пакета
 from habibi_ai.tools import delivery  # noqa: E402,F401  регистрация при импорте пакета
+from habibi_ai.tools import hours  # noqa: E402,F401  регистрация при импорте пакета

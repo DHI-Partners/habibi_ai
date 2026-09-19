@@ -1,0 +1,26 @@
+{
+ "actions": [],
+ "creation": "2026-09-19 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["date", "closed", "opens", "closes", "note"],
+ "fields": [
+  {"fieldname": "date", "fieldtype": "Date", "in_list_view": 1, "label": "Дата", "reqd": 1},
+  {"default": "0", "fieldname": "closed", "fieldtype": "Check", "in_list_view": 1, "label": "Закрыто"},
+  {"depends_on": "eval:!doc.closed", "fieldname": "opens", "fieldtype": "Time", "in_list_view": 1, "label": "С"},
+  {"depends_on": "eval:!doc.closed", "fieldname": "closes", "fieldtype": "Time", "in_list_view": 1, "label": "До"},
+  {"fieldname": "note", "fieldtype": "Data", "in_list_view": 1, "label": "Причина"}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-19 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "Working Hours Exception",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

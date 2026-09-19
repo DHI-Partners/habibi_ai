@@ -1,0 +1,28 @@
+{
+ "actions": [],
+ "creation": "2026-09-19 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["weekday", "kind", "opens", "closes"],
+ "fields": [
+  {"fieldname": "weekday", "fieldtype": "Select", "in_list_view": 1, "label": "День", "reqd": 1,
+   "options": "Понедельник\nВторник\nСреда\nЧетверг\nПятница\nСуббота\nВоскресенье"},
+  {"default": "Работа", "fieldname": "kind", "fieldtype": "Select", "in_list_view": 1, "label": "Что",
+   "options": "Работа\nДоставка", "reqd": 1},
+  {"fieldname": "opens", "fieldtype": "Time", "in_list_view": 1, "label": "С", "reqd": 1},
+  {"description": "Раньше открытия — работа через полночь", "fieldname": "closes", "fieldtype": "Time",
+   "in_list_view": 1, "label": "До", "reqd": 1}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-19 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "Working Hours Slot",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
