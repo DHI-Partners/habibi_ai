@@ -363,6 +363,7 @@ def _order_text(so, quote, repeated=False):
 			_customer_line(quote.customer_name, quote.phone),
 			*rules.item_lines(rows_of(so), so.currency),
 			rules.total_line(payable(so), taxes_of(so), so.currency),
+			*([f"Пожелания: {quote.notes}"] if quote.notes else []),
 			"Сообщи клиенту номер заказа и что оператор его подтвердит. Не обещай, что заказ уже готовят.",
 		]
 	)

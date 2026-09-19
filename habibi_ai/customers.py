@@ -45,12 +45,8 @@ def find_by_phone(phone):
 
 def create(customer_name, phone):
 	"""Новый Customer. mobile_no на вставке ERPNext превращает в основной контакт."""
-	group = frappe.db.get_single_value("Selling Settings", "customer_group") or frappe.db.get_value(
-		"Customer Group", {"lft": 1}
-	)
-	territory = frappe.db.get_single_value("Selling Settings", "territory") or frappe.db.get_value(
-		"Territory", {"lft": 1}
-	)
+	group = frappe.db.get_single_value("Selling Settings", "customer_group") or _first_leaf("Customer Group")
+	territory = frappe.db.get_single_value("Selling Settings", "territory") or _first_leaf("Territory")
 	doc = frappe.get_doc(
 		{
 			"doctype": "Customer",
@@ -63,6 +59,17 @@ def create(customer_name, phone):
 	)
 	doc.insert(ignore_permissions=True)
 	return doc.name
+
+
+def _first_leaf(doctype):
+	"""Первая не групповая запись дерева — запасной вариант, когда в Selling
+	Settings умолчание не задано.
+
+	Не корень: «All Customer Groups» — папка, и ERPNext не пускает в неё
+	клиента. На erp.habibi-erp.com умолчание пустое, и без этого первый же
+	новый клиент получал бы отказ вместо заказа.
+	"""
+	return frappe.db.get_value(doctype, {"is_group": 0}, "name", order_by="lft asc")
 
 
 def link_chat(channel_chat, customer):
