@@ -209,7 +209,7 @@ class TestЦиклИнструментов(unittest.TestCase):
 		# должна сторона, владеющая правами тенанта. Отказ идёт моделью
 		# текстом, а не падением хода.
 		client = self._client_с_шагами([
-			{"type": "tool_use", "id": "t1", "name": "create_order", "input": {}},
+			{"type": "tool_use", "id": "t1", "name": "cancel_all_orders", "input": {}},
 			{"type": "text", "content": "готово"},
 		])
 		with patch("frappe.get_roles", return_value=[]):
@@ -222,13 +222,13 @@ class TestЦиклИнструментов(unittest.TestCase):
 		turn = client.step.call_args_list[1].kwargs["turn"]
 		rejection = turn[1]
 		self.assertEqual(rejection["type"], "tool_result")
-		self.assertIn("create_order", rejection["content"])
+		self.assertIn("cancel_all_orders", rejection["content"])
 
 	def test_отказ_на_неразрешённое_имя_виден_в_трассировке(self):
 		# Спека: отказ должен быть виден не только модели в tool_result, но и
 		# человеку в трассировке хода.
 		client = self._client_с_шагами([
-			{"type": "tool_use", "id": "t1", "name": "create_order", "input": {}},
+			{"type": "tool_use", "id": "t1", "name": "cancel_all_orders", "input": {}},
 			{"type": "text", "content": "готово"},
 		])
 		with patch("frappe.get_roles", return_value=[api.DEBUG_ROLE]):
@@ -239,7 +239,7 @@ class TestЦиклИнструментов(unittest.TestCase):
 		run.assert_not_called()
 		rejected = [s for s in result["debug"] if s["step"] == "tool_rejected"]
 		self.assertEqual(len(rejected), 1)
-		self.assertEqual(rejected[0]["data"]["name"], "create_order")
+		self.assertEqual(rejected[0]["data"]["name"], "cancel_all_orders")
 
 	def test_виток_цикла_виден_в_трассировке(self):
 		# Спека §8: в трассировке должен быть виден номер витка и лимит, а

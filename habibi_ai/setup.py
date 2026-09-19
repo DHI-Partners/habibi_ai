@@ -18,12 +18,14 @@ def after_install():
 	drop_desktop_icon()
 	drop_workspace()
 	install_telegram_fields()
+	install_order_source_option()
 
 
 def after_migrate():
 	drop_desktop_icon()
 	drop_workspace()
 	install_telegram_fields()
+	install_order_source_option()
 
 
 def drop_desktop_icon():
@@ -91,3 +93,24 @@ def install_telegram_fields():
 		},
 	]
 	create_custom_fields({doctype: fields for doctype in TELEGRAM_CHANNELS}, update=True)
+
+
+ORDER_SOURCE = "Telegram"
+
+
+def install_order_source_option():
+	"""Вариант Telegram в источнике заказа — там, где поле источника есть.
+
+	Не фикстурой: custom_order_source заведён руками на одном сайте, и
+	фикстура Property Setter разъехалась бы на все, где такого поля нет.
+	Идемпотентно — вызывается на каждой миграции.
+	"""
+	name = frappe.db.get_value("Custom Field", {"dt": "Sales Order", "fieldname": "custom_order_source"})
+	if not name:
+		return
+	field = frappe.get_doc("Custom Field", name)
+	options = [o for o in (field.options or "").split("\n") if o]
+	if ORDER_SOURCE in options:
+		return
+	field.options = "\n".join([*options, ORDER_SOURCE])
+	field.save(ignore_permissions=True)

@@ -259,3 +259,110 @@ def _quote(context, items, fulfilment, zone, customer_name, phone, notes):
 		f"create_order с quote_id «{quote.name}». Если клиент что-то меняет — сделай новый quote_order."
 	)
 	return "\n".join(parts)
+
+
+@tool(
+	name="create_order",
+	description=(
+		"Оформляет заказ по расчёту quote_order — черновиком, который подтвердит оператор. "
+		"Вызывай только после явного согласия клиента на зачитанный расчёт. "
+		"Говори «заказ оформлен» только пересказом ответа этого инструмента."
+	),
+	input_schema={
+		"type": "object",
+		"properties": {"quote_id": {"type": "string", "description": "Номер расчёта из ответа quote_order"}},
+		"required": ["quote_id"],
+	},
+	context=True,
+)
+def create_order(context, quote_id=None):
+	try:
+		return _create(context, quote_id)
+	except Refusal as e:
+		return str(e)
+
+
+def _create(context, quote_id):
+	quote = frappe.get_doc(QUOTE, quote_id) if quote_id and frappe.db.exists(QUOTE, quote_id) else None
+	verdict = rules.check_quote(quote.as_dict() if quote else None, context, now_datetime())
+	if verdict == "done":
+		return _order_text(frappe.get_doc("Sales Order", quote.sales_order), quote, repeated=True)
+
+	settings = load_settings()
+	# Клиент, привязка чата и заказ — одно целое: упал заказ — не должно
+	# остаться ни нового клиента, ни привязки к нему
+	frappe.db.savepoint("create_order")
+	try:
+		customer = quote.customer or customers.find_by_phone(quote.phone) or customers.create(
+			quote.customer_name, quote.phone
+		)
+		if quote.channel_doctype and quote.channel_name:
+			customers.link_chat((quote.channel_doctype, quote.channel_name), customer)
+		lines = [
+			{"item_code": r.item_code, "item_name": r.item_name, "qty": r.qty, "rate": r.rate, "uom": r.uom}
+			for r in quote.items
+		]
+		so = build_sales_order(settings, lines, customer)
+		_set_optional_fields(so, quote)
+		so.insert(ignore_permissions=True)
+		quote.db_set("sales_order", so.name)
+	except Exception as e:
+		frappe.db.rollback(save_point="create_order")
+		frappe.log_error(title="create_order", message=frappe.get_traceback())
+		raise Refusal(
+			f"Не удалось оформить заказ: {strip_html(str(e))[:200]}. Не говори клиенту, что заказ создан; "
+			"предложи связаться с оператором."
+		) from e
+
+	text = _order_text(so, quote)
+	if abs(payable(so) - float(quote.grand_total)) >= 0.01:
+		text += (
+			f"\nВнимание: итог изменился — в расчёте было {rules.money(quote.grand_total)}, в заказе "
+			f"{rules.money(payable(so))} {so.currency}. Назови клиенту новую сумму."
+		)
+	return text
+
+
+def _set_optional_fields(so, quote):
+	"""Поля, заведённые руками на конкретном сайте: ставим только существующие.
+
+	custom_* на erp.habibi-erp.com есть, на naqwa их нет — там заказ должен
+	создаваться так же, просто без этих пометок.
+	"""
+	meta = frappe.get_meta("Sales Order")
+	values = {
+		"custom_fulfilment_type": quote.fulfilment,
+		"custom_agent_handled": 1,
+		"custom_whatsapp_number": quote.phone,
+		"custom_kitchen_notes": quote.notes,
+	}
+	if quote.delivery_zone and frappe.db.exists("DocType", ZONE_DOCTYPE) and frappe.db.exists(
+		ZONE_DOCTYPE, quote.delivery_zone
+	):
+		values["custom_delivery_zone"] = quote.delivery_zone
+
+	source = SOURCE_BY_CHANNEL.get(quote.channel_doctype)
+	field = meta.get_field("custom_order_source")
+	if source and field and source in (field.options or "").split("\n"):
+		values["custom_order_source"] = source
+
+	for fieldname, value in values.items():
+		if value and meta.has_field(fieldname):
+			so.set(fieldname, value)
+
+
+def _order_text(so, quote, repeated=False):
+	head = (
+		f"Заказ {so.name} уже создан по этому расчёту — второй не создавался."
+		if repeated
+		else f"Заказ {so.name} создан — черновик, ждёт подтверждения оператора."
+	)
+	return "\n".join(
+		[
+			head,
+			_customer_line(quote.customer_name, quote.phone),
+			*rules.item_lines(rows_of(so), so.currency),
+			rules.total_line(payable(so), taxes_of(so), so.currency),
+			"Сообщи клиенту номер заказа и что оператор его подтвердит. Не обещай, что заказ уже готовят.",
+		]
+	)
