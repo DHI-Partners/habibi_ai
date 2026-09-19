@@ -222,3 +222,40 @@ class TestКонтекст(unittest.TestCase):
 		definition = tools.definitions(["_с_контекстом"])[0]
 		self.assertNotIn("context", definition)
 		self.assertNotIn("run", definition)
+
+
+class TestКаталогЗаказа(unittest.TestCase):
+	"""Заказать можно ровно то, что бот показал бы в меню: иначе он назвал бы
+	позицию, а оформить её было бы нельзя, — или наоборот."""
+
+	def _frappe(self, prices, items):
+		def get_all(doctype, **kwargs):
+			return list(prices) if doctype == "Item Price" else list(items)
+
+		return patch.multiple(
+			"frappe",
+			get_all=Mock(side_effect=get_all),
+			utils=Mock(nowdate=Mock(return_value="2026-09-12")),
+		)
+
+	def test_каталог_по_действующим_ценам_без_доставки(self):
+		from habibi_ai.tools import menu
+
+		prices = [
+			{"item_code": "A", "price_list_rate": 100.0, "valid_from": None, "valid_upto": None},
+			{"item_code": "OLD", "price_list_rate": 5.0, "valid_from": None, "valid_upto": "2026-01-01"},
+			{"item_code": "SRV-DELIVERY", "price_list_rate": 800.0, "valid_from": None, "valid_upto": None},
+		]
+		items = [
+			{"item_code": "A", "item_name": "Позиция A", "stock_uom": "Nos"},
+			{"item_code": "SRV-DELIVERY", "item_name": "Delivery", "stock_uom": "Nos"},
+		]
+		with self._frappe(prices, items):
+			catalog = menu.sellable_catalog("Habibi Menu")
+		self.assertEqual(catalog, {"A": {"item_name": "Позиция A", "rate": 100.0, "uom": "Nos"}})
+
+	def test_пустой_прайс_пустой_каталог(self):
+		from habibi_ai.tools import menu
+
+		with self._frappe([], []):
+			self.assertEqual(menu.sellable_catalog("Habibi Menu"), {})
