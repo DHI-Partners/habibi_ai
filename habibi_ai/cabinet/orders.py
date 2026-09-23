@@ -53,6 +53,12 @@ def _state(doc):
 	return {0: _("Черновик"), 1: _("Принят"), 2: _("Отменён")}[doc.docstatus]
 
 
+def _may_discard(doc):
+	"""Синтетическое «отклонить» удаляет черновик — тут ровно то право, что
+	apply() потом проверит перед frappe.delete_doc."""
+	return frappe.has_permission("Sales Order", "delete", doc=doc)
+
+
 def _available(doc):
 	if _workflow(doc):
 		accept, reject = _names()
@@ -63,15 +69,20 @@ def _available(doc):
 		# Прод-воркфлоу («Habibi Burger Order») не выпускает черновик иначе,
 		# чем через «Confirm» — выхода в «отклонить» из New там нет вовсе.
 		# Не даём владельцу зависнуть с черновиком без единого способа его
-		# закрыть: удаление черновика доступно всегда, как и без воркфлоу.
-		if doc.docstatus == 0 and not any(t["kind"] == "reject" for t in transitions):
+		# закрыть: удаление черновика доступно всегда, как и без воркфлоу —
+		# но только тому, у кого есть право его удалить.
+		if (
+			doc.docstatus == 0
+			and not any(t["kind"] == "reject" for t in transitions)
+			and _may_discard(doc)
+		):
 			transitions.append({"action": notify_rules.NO_WORKFLOW_REJECT, "kind": "reject"})
 		return transitions
 	if doc.docstatus == 0:
-		return [
-			{"action": notify_rules.NO_WORKFLOW_ACCEPT, "kind": "accept"},
-			{"action": notify_rules.NO_WORKFLOW_REJECT, "kind": "reject"},
-		]
+		available = [{"action": notify_rules.NO_WORKFLOW_ACCEPT, "kind": "accept"}]
+		if _may_discard(doc):
+			available.append({"action": notify_rules.NO_WORKFLOW_REJECT, "kind": "reject"})
+		return available
 	return []
 
 
@@ -100,9 +111,12 @@ def _draft_text(kind, doc, reason=None):
 
 @frappe.whitelist(methods=["POST"])
 def apply(name, action, reason=None):
-	"""Переход заказа. Чат вычисляется до перехода: «отклонить» без воркфлоу
-	удаляет черновик, и ссылка расчёта на заказ после этого обнулится."""
+	"""Переход заказа. Чат читаем до перехода, хоть это и не обязательно:
+	ссылка AI Order Quote → Sales Order переживает discard (в hooks.py —
+	ignore_links_on_delete), так что найти чат можно и по уже удалённому
+	заказу — см. notify()."""
 	doc = frappe.get_doc("Sales Order", name)
+	doc.check_permission("read")
 	allowed = {a["action"]: a["kind"] for a in _available(doc)}
 	if action not in allowed:
 		frappe.throw(_("Действие «{0}» сейчас недоступно").format(action))
@@ -129,18 +143,44 @@ def apply(name, action, reason=None):
 
 	notify = None
 	if chat and kind in TEMPLATES:
-		notify = {"kind": kind, "text": _draft_text(kind, snapshot, reason), "chat": chat}
+		notify = {"kind": kind, "text": _draft_text(kind, snapshot, reason)}
 	return {"state": state, "notify": notify}
 
 
+def _check_notify_permission(name):
+	"""Кто может писать клиенту от имени этого заказа.
+
+	Заказ ещё жив — обычное «право писать» в него. Черновик уже удалён
+	(discard) — самого документа для check_permission нет, а право нужно то
+	же, что позволило бы его удалить; вдобавок должен существовать расчёт
+	(AI Order Quote) с этим заказом — иначе имя ничем не подтверждено вовсе.
+	"""
+	if frappe.db.exists("Sales Order", name):
+		frappe.get_doc("Sales Order", name).check_permission("write")
+		return
+	if frappe.db.exists("AI Order Quote", {"sales_order": name}) and frappe.has_permission(
+		"Sales Order", "delete"
+	):
+		return
+	raise frappe.PermissionError
+
+
 @frappe.whitelist(methods=["POST"])
-def notify(name, text, chat=None):
+def notify(name, text):
 	"""Отправить клиенту; результат — в таймлайн заказа, если заказ ещё есть.
 
-	chat приходит из ответа apply: после отклонения черновика заказа уже нет,
-	и найти чат по нему нельзя.
+	Чат ищем по имени заказа, не по значению от клиента: AI Order Quote
+	хранит ссылку на Sales Order даже после его удаления (в hooks.py —
+	ignore_links_on_delete), так что _chat() находит чат и после discard.
+	Принять чат аргументом означало бы, что любой вызывающий может указать
+	чужой чат и отправить туда что угодно от имени бота.
 	"""
-	chat = chat or _chat(name)
+	_check_notify_permission(name)
+	text = (text or "").strip()
+	if not text:
+		frappe.throw(_("Текст уведомления не может быть пустым"))
+
+	chat = _chat(name)
 	channel = _pair(chat) if chat else None
 	if not channel:
 		frappe.throw(_("У заказа нет чата с клиентом"))
@@ -149,8 +189,15 @@ def notify(name, text, chat=None):
 		result = {"sent": True, "error": None}
 		note = _("Клиент уведомлён: {0}").format(text)
 	except Exception as e:
-		result = {"sent": False, "error": str(e)}
-		note = _("Клиент не уведомлён: {0}").format(e)
+		# Полный текст — только в лог: у сетевых ошибок Telegram-клиента в
+		# сообщении зашит URL вида /bot<TOKEN>/..., и это утекло бы в ответ
+		# API и в таймлайн заказа. description — safe-текст от самого
+		# Telegram (TelegramAPIError, когда он ответил ok=false); во всех
+		# прочих случаях (сеть недоступна, не JSON и т.п.) — общая фраза.
+		frappe.log_error(title=f"Не удалось уведомить клиента о заказе {name}", message=frappe.get_traceback())
+		safe = getattr(e, "description", None) or _("Telegram недоступен, попробуйте позже")
+		result = {"sent": False, "error": safe}
+		note = _("Клиент не уведомлён: {0}").format(safe)
 	if frappe.db.exists("Sales Order", name):
 		frappe.get_doc("Sales Order", name).add_comment("Comment", note)
 	return result
