@@ -149,9 +149,16 @@ def send(chat, text):
 	# впустить бот-раунд, начатый до неё, и его сообщение не должно попасть
 	# в диапазон «наше».
 	sent_at = now_datetime()
+	# habibi_telegram сам делает frappe.throw(describe_error(e)) на сбое
+	# отправки — это сообщение уже легло в message_log и ушло бы клиенту
+	# первым, в обход safe-текста ниже (тот же приём, что в
+	# cabinet.settings._call_telegram)
+	log = frappe.local.message_log
+	mark = len(log)
 	try:
 		telegram.send((p.channel_doctype, p.channel_name), chat, sent)
 	except Exception as e:
+		del log[mark:]
 		# Полный текст — только в лог: у сетевых ошибок Telegram-клиента в
 		# сообщении зашит URL вида /bot<TOKEN>/..., и это утекло бы наружу.
 		# description — safe-текст от самого Telegram (TelegramAPIError, когда

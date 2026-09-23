@@ -275,3 +275,25 @@ class TestCabinetChats(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError) as ctx:
 				chats.send(self.chat.name, "Сейчас уточню")
 		self.assertNotIn("SECRET", str(ctx.exception))
+
+	def test_сообщение_telegram_в_message_log_не_утекает(self):
+		"""habibi_telegram (user_client.send_message) сам делает
+		frappe.throw(describe_error(e)) до того, как исключение дойдёт до
+		telegram.send() здесь — оно уже лежит в message_log и ушло бы в ответ
+		раньше safe-текста, если его не вычистить (задача 17/19)."""
+
+		def _leaking_send(channel, chat, text):
+			try:
+				raise RuntimeError("phone_code_hash=hash-secret")
+			except RuntimeError as e:
+				frappe.throw(f"Telegram did not accept the message: {e}")
+
+		frappe.local.message_log = []
+		with (
+			patch("habibi_ai.cabinet.chats.telegram.send", _leaking_send),
+			patch("frappe.log_error"),
+		):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				chats.send(self.chat.name, "Сейчас уточню")
+		self.assertNotIn("hash-secret", str(ctx.exception))
+		self.assertNotIn("hash-secret", frappe.as_json(frappe.local.message_log))

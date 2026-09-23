@@ -29,6 +29,10 @@ after_app_install = "habibi_ai.setup.after_app_install"
 # Telegram как канал ИИ. Хуки на доктайпы habibi_telegram безвредны там, где
 # его нет: событий этих доктайпов на таком сайте просто не бывает.
 doc_events = {
+	# Код позиции — из названия, если владелец (кабинет) его не ввёл; см.
+	# habibi_ai/items.py. Хук общий для любой вставки Item, не только из
+	# кабинета.
+	"Item": {"before_insert": "habibi_ai.items.before_insert"},
 	"Telegram Message": {
 		"after_insert": [
 			"habibi_ai.channels.telegram.on_message_insert",

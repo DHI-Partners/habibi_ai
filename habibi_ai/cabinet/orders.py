@@ -184,11 +184,18 @@ def notify(name, text):
 	channel = _pair(chat) if chat else None
 	if not channel:
 		frappe.throw(_("У заказа нет чата с клиентом"))
+	# habibi_telegram сам делает frappe.throw(describe_error(e)) на сбое
+	# отправки — это сообщение уже легло в message_log и утекло бы в ответ
+	# (даже несмотря на то, что ниже мы саму ошибку гасим и возвращаем обычный
+	# результат); приём — тот же, что в cabinet.settings._call_telegram
+	log = frappe.local.message_log
+	mark = len(log)
 	try:
 		telegram.send(channel, chat, text)
 		result = {"sent": True, "error": None}
 		note = _("Клиент уведомлён: {0}").format(text)
 	except Exception as e:
+		del log[mark:]
 		# Полный текст — только в лог: у сетевых ошибок Telegram-клиента в
 		# сообщении зашит URL вида /bot<TOKEN>/..., и это утекло бы в ответ
 		# API и в таймлайн заказа. description — safe-текст от самого

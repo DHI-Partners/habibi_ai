@@ -115,6 +115,28 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 		self.assertTrue(comments)
 		self.assertTrue(all("SECRET" not in c for c in comments))
 
+	def test_сообщение_telegram_в_message_log_не_утекает(self):
+		"""habibi_telegram (user_client.send_message) сам делает
+		frappe.throw(describe_error(e)) на сбое — оно уже лежит в message_log
+		и утекло бы в ответ вместе с обычным {"sent": False, ...}, если его не
+		вычистить (задача 17/19)."""
+
+		def _leaking_send(channel, chat, text):
+			try:
+				raise RuntimeError("phone_code_hash=hash-secret")
+			except RuntimeError as e:
+				frappe.throw(f"Telegram did not accept the message: {e}")
+
+		frappe.local.message_log = []
+		with (
+			patch("habibi_ai.cabinet.orders.telegram.send", _leaking_send),
+			patch("frappe.log_error"),
+		):
+			result = orders.notify(self.so.name, "Заказ принят")
+		self.assertFalse(result["sent"])
+		self.assertNotIn("hash-secret", result["error"])
+		self.assertNotIn("hash-secret", frappe.as_json(frappe.local.message_log))
+
 	def test_заказ_без_чата_не_предлагает_уведомление(self):
 		frappe.db.set_value("AI Order Quote", {"sales_order": self.so.name}, "sales_order", None)
 		self.assertFalse(orders.actions(self.so.name)["can_notify"])
