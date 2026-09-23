@@ -75,8 +75,20 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 			self.assertEqual([a["kind"] for a in orders.actions(self.so.name)["actions"]], ["accept", "reject"])
 			result = orders.apply(self.so.name, "submit")
 		self.assertEqual(frappe.db.get_value("Sales Order", self.so.name, "docstatus"), 1)
-		self.assertEqual(result["notify"]["text"], f"Заказ {self.so.name} принят")
+		self.assertEqual(result["notify"]["text"], f"Заказ №{orders._number(self.so.name)} принят")
 		self.assertNotIn("chat", result["notify"])
+
+	def test_уведомление_с_коротким_номером_и_суммой_как_на_экране(self):
+		"""Клиенту — тот же номер и та же сумма, что владелец видит на экране:
+		«№18» и «3 870 ₸» (итог к оплате, разряды ru), а не имя документа и
+		fmt_money сайта."""
+		frappe.db.set_value("Telegram Message Template", "order_accepted", "default_template", "{order}: {total}")
+		symbol = frappe.db.get_value("Currency", "KZT", "symbol") or "KZT"
+		with patch("habibi_ai.cabinet.orders._workflow", return_value=None):
+			result = orders.apply(self.so.name, "submit")
+		self.assertEqual(
+			result["notify"]["text"], f"№{orders._number(self.so.name)}: 3\u00a0870\u00a0{symbol}"
+		)
 
 	def test_без_воркфлоу_отклонить_удаляет_черновик(self):
 		with patch("habibi_ai.cabinet.orders._workflow", return_value=None):
@@ -251,6 +263,10 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 		откат теста его бы не убрал. Имя воркфлоу подставляем патчем
 		_workflow — get_workflow_name кэширует в Redis, отката там нет."""
 		name = "_Habibi Test Burger Order"
+		# _state_field/_targets кэшируются на запрос — между тестами кэш не
+		# должен переносить поле состояния прошлого теста
+		self._clear_request_cache()
+		self.addCleanup(self._clear_request_cache)
 		# Откат — на весь класс (IntegrationTestCase), а не на каждый тест:
 		# воркфлоу мог остаться от соседнего теста
 		if frappe.db.exists("Workflow", name):
@@ -274,6 +290,11 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 				}
 			).db_insert()
 		return name
+
+	@staticmethod
+	def _clear_request_cache():
+		if getattr(frappe.local, "request_cache", None) is not None:
+			frappe.local.request_cache.clear()
 
 	def test_состояние_читается_из_поля_воркфлоу(self):
 		name = self._workflow_in_db()
@@ -329,18 +350,25 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 
 	def test_статус_в_списке_без_воркфлоу_по_docstatus(self):
 		with patch("habibi_ai.cabinet.orders._workflow", return_value=None):
-			self.assertEqual(order_status.read([self.so.name]), {self.so.name: "Черновик"})
+			self.assertEqual(order_status.read([self.so.name]), {self.so.name: {"state": "Черновик", "kind": "new"}})
 			orders.apply(self.so.name, "submit")
-			self.assertEqual(order_status.read([self.so.name]), {self.so.name: "Принят"})
+			self.assertEqual(
+				order_status.read([self.so.name]), {self.so.name: {"state": "Принят", "kind": "accepted"}}
+			)
 
 	def test_статус_в_списке_из_поля_воркфлоу(self):
 		# Список читает из базы, а колонки custom_order_status на dev нет —
 		# поле состояния воркфлоу здесь стандартное текстовое po_no: важно
 		# лишь, что читается поле из настроек воркфлоу, а не workflow_state
 		name = self._workflow_in_db(state_field="po_no")
-		frappe.db.set_value("Sales Order", self.so.name, "po_no", "Confirmed", update_modified=False)
+		frappe.db.set_value("Sales Order", self.so.name, "po_no", "In Kitchen", update_modified=False)
+		frappe.db.set_value("Sales Order", self.so.name, "docstatus", 1, update_modified=False)
 		with patch("habibi_ai.cabinet.orders._workflow", return_value=name):
-			self.assertEqual(order_status.read([self.so.name]), {self.so.name: "Confirmed"})
+			# Смысл (kind) — тот же _kind, что у экрана заказа: цвет бейджа
+			# в списке и на экране один
+			self.assertEqual(
+				order_status.read([self.so.name]), {self.so.name: {"state": "In Kitchen", "kind": "other"}}
+			)
 
 	def test_сумма_в_списке_с_символом_валюты(self):
 		symbol = frappe.db.get_value("Currency", "KZT", "symbol") or "KZT"

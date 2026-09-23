@@ -13,6 +13,7 @@ from frappe.model.workflow import WorkflowStateError, apply_workflow, get_transi
 from frappe.utils.caching import request_cache
 
 from habibi_ai import notify_rules
+from habibi_ai.cabinet.money import money
 from habibi_ai.channels import telegram
 from habibi_ai.order_rules import DELIVERY_ITEM
 from habibi_ai.tools.orders import SOURCE_BY_CHANNEL, payable
@@ -154,6 +155,10 @@ def _optional(doc, meta, fieldname):
 	return doc.get(fieldname) if meta.has_field(fieldname) else None
 
 
+def _symbol(currency):
+	return frappe.db.get_value("Currency", currency, "symbol") or currency
+
+
 def _number(name):
 	"""«SAL-ORD-2026-00018» → «18»: владельцу длинное имя ни к чему."""
 	match = re.search(r"(\d+)$", name)
@@ -213,7 +218,7 @@ def details(name):
 		"total": payable(doc),
 		"taxes": float(doc.total_taxes_and_charges or 0),
 		"currency": doc.currency,
-		"currency_symbol": frappe.db.get_value("Currency", doc.currency, "symbol") or doc.currency,
+		"currency_symbol": _symbol(doc.currency),
 		"chat": chat,
 	}
 
@@ -225,9 +230,11 @@ def _draft_text(kind, doc, reason=None):
 	return notify_rules.render(
 		template,
 		{
-			"order": doc.name,
+			# Номер и сумма — как на экране заказа («№18», «4 670 ₸», итог к оплате),
+			# а не имя документа и fmt_money сайта: клиент и владелец видят одно
+			"order": f"№{_number(doc.name)}",
 			"customer": doc.customer_name,
-			"total": frappe.utils.fmt_money(doc.grand_total, currency=doc.currency),
+			"total": money(payable(doc), _symbol(doc.currency)),
 			"time": doc.get("custom_requested_time") or "",
 			"reason": reason,
 		},
@@ -249,7 +256,7 @@ def apply(name, action, reason=None):
 	chat = _chat(name)
 	snapshot = frappe._dict(
 		name=doc.name, customer_name=doc.customer_name, grand_total=doc.grand_total,
-		currency=doc.currency, custom_requested_time=doc.get("custom_requested_time"),
+		rounded_total=doc.get("rounded_total"), currency=doc.currency, custom_requested_time=doc.get("custom_requested_time"),
 	)
 
 	# «Отклонить» без реальной ветки воркфлоу — тот же синтетический

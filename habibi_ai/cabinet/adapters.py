@@ -12,6 +12,7 @@ import frappe
 from frappe.model import default_fields
 
 from habibi_ai.cabinet import orders
+from habibi_ai.cabinet.money import money
 from habibi_ai.tools.menu import valid_prices
 
 _KNOWN_FIELDS = set(default_fields)
@@ -78,7 +79,9 @@ class OrderStatus:
 
 	doctype = "Sales Order"
 	label = "Статус"
-	# Не тип Frappe: знак списку кабинета, что это статус и рисуется бейджем
+	# Не тип Frappe: знак списку кабинета, что значение — {"state", "kind"} и
+	# рисуется бейджем. kind — тот же orders._kind, что у экрана заказа: цвет
+	# бейджа в списке и на экране решает одно правило, а не два словаря.
 	fieldtype = "Status"
 
 	def editable(self):
@@ -94,7 +97,7 @@ class OrderStatus:
 			if field in _KNOWN_FIELDS or frappe.get_meta(self.doctype).has_field(field):
 				fields.append(field)
 		rows = frappe.get_all(self.doctype, filters={"name": ["in", names]}, fields=fields)
-		return {r.name: orders._state(r) for r in rows}
+		return {r.name: {"state": orders._state(r), "kind": orders._kind(r)} for r in rows}
 
 	def write(self, doc, value):
 		raise frappe.PermissionError
@@ -110,6 +113,9 @@ class OrderTotal:
 
 	doctype = "Sales Order"
 	label = "Сумма"
+	# Значение — готовая строка, но тип Currency намеренно: по нему список
+	# кабинета ставит сумму справа (карточка телефона, колонка таблицы), а
+	# money() фронта строку-не-число отдаёт как есть.
 	fieldtype = "Currency"
 
 	def editable(self):
@@ -129,19 +135,13 @@ class OrderTotal:
 				as_list=True,
 			)
 		)
+		# rounded_total or grand_total — как tools.orders.payable: сумма, названная клиенту
 		return {
 			r.name: money(r.rounded_total or r.grand_total, symbols.get(r.currency) or r.currency) for r in rows
 		}
 
 	def write(self, doc, value):
 		raise frappe.PermissionError
-
-
-def money(value, symbol):
-	"""3870 → «3 870 ₸», 12.5 → «12,50 ₸» (разделители — неразрывные пробелы)."""
-	value = float(value or 0)
-	text = f"{value:,.0f}" if value == int(value) else f"{value:,.2f}"
-	return text.replace(",", " ").replace(".", ",") + " " + symbol
 
 
 order_status = OrderStatus()
