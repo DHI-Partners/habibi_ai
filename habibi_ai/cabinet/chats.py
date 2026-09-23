@@ -8,6 +8,7 @@ import frappe
 from frappe import _
 from frappe.utils import now_datetime
 
+from habibi_ai.cabinet import realtime
 from habibi_ai.channels import decisions, telegram
 
 PAIR = "AI Channel Chat"
@@ -111,16 +112,24 @@ def messages(chat, before=None):
 	]
 
 
+def _notify_chat_changed(chat):
+	"""pause/resume/send пишут через frappe.db.set_value — он не зовёт
+	on_update, поэтому хук в hooks.py тут не сработает: шлём событие сами."""
+	realtime.on_change(frappe._dict(doctype="AI Channel Chat", telegram_chat=chat))
+
+
 @frappe.whitelist(methods=["POST"])
 def pause(chat):
 	p = _pair_for_write(chat)
 	telegram.pause((p.channel_doctype, p.channel_name), chat, PAUSED_BY_STAFF)
+	_notify_chat_changed(chat)
 
 
 @frappe.whitelist(methods=["POST"])
 def resume(chat):
 	p = _pair_for_write(chat)
 	frappe.db.set_value(PAIR, p.name, {"ai_paused": 0, "paused_reason": None, "paused_on": None})
+	_notify_chat_changed(chat)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -134,6 +143,7 @@ def send(chat, text):
 		frappe.throw(_("Пустое сообщение"))
 	p = _pair_for_write(chat)
 	telegram.pause((p.channel_doctype, p.channel_name), chat, PAUSED_BY_STAFF)
+	_notify_chat_changed(chat)
 	sent = text.strip()
 	# Метка времени — сразу перед отправкой, а не раньше: пауза уже могла
 	# впустить бот-раунд, начатый до неё, и его сообщение не должно попасть

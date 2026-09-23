@@ -92,16 +92,40 @@ class TestCabinetChats(IntegrationTestCase):
 		self.assertEqual(authors[-3:], ["client", "bot", "staff"])
 
 	def test_взять_на_себя_и_вернуть(self):
-		chats.pause(self.chat.name)
-		self.assertTrue(next(c for c in chats.list() if c["chat"] == self.chat.name)["paused"])
-		chats.resume(self.chat.name)
-		self.assertFalse(next(c for c in chats.list() if c["chat"] == self.chat.name)["paused"])
+		"""pause/resume пишут через frappe.db.set_value — on_update не сработает,
+		поэтому кабинет должен получить событие явным вызовом realtime."""
+		with (
+			patch("habibi_ai.cabinet.realtime.get_users_with_role", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
+			chats.pause(self.chat.name)
+			self.assertTrue(next(c for c in chats.list() if c["chat"] == self.chat.name)["paused"])
+			chats.resume(self.chat.name)
+			self.assertFalse(next(c for c in chats.list() if c["chat"] == self.chat.name)["paused"])
+		self.assertEqual(pub.call_count, 2)
+		for call in pub.call_args_list:
+			self.assertEqual(
+				call.args, ("habibi_cabinet", {"topic": "chats", "chat": self.chat.name})
+			)
+			self.assertEqual(call.kwargs, {"user": "owner@example.com", "after_commit": True})
 
 	def test_ответ_сотрудника_ставит_паузу_и_уходит(self):
-		with patch("habibi_ai.cabinet.chats.telegram.send") as send:
+		with (
+			patch("habibi_ai.cabinet.chats.telegram.send") as send,
+			patch("habibi_ai.cabinet.realtime.get_users_with_role", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
 			chats.send(self.chat.name, "Сейчас уточню")
 		self.assertEqual(send.call_args.args[1:], (self.chat.name, "Сейчас уточню"))
 		self.assertTrue(next(c for c in chats.list() if c["chat"] == self.chat.name)["paused"])
+		# send() сам ставит паузу через telegram.pause (frappe.db.set_value,
+		# без on_update) — событие о ней шлём явно, до отправки сообщения.
+		pub.assert_any_call(
+			"habibi_cabinet",
+			{"topic": "chats", "chat": self.chat.name},
+			user="owner@example.com",
+			after_commit=True,
+		)
 
 	def test_ответ_сотрудника_в_ленте_от_сотрудника(self):
 		def fake_send(channel, chat, text):

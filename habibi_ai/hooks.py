@@ -29,9 +29,19 @@ after_app_install = "habibi_ai.setup.after_app_install"
 # Telegram как канал ИИ. Хуки на доктайпы habibi_telegram безвредны там, где
 # его нет: событий этих доктайпов на таком сайте просто не бывает.
 doc_events = {
-	"Telegram Message": {"after_insert": "habibi_ai.channels.telegram.on_message_insert"},
+	"Telegram Message": {
+		"after_insert": [
+			"habibi_ai.channels.telegram.on_message_insert",
+			"habibi_ai.cabinet.realtime.on_change",
+		],
+	},
 	"Telegram Bot": {"validate": "habibi_ai.channels.telegram.validate_channel"},
 	"Telegram Account": {"validate": "habibi_ai.channels.telegram.validate_channel"},
+	"Sales Order": {
+		"on_update": "habibi_ai.cabinet.realtime.on_change",
+		"on_submit": "habibi_ai.cabinet.realtime.on_change",
+	},
+	"AI Channel Chat": {"on_update": "habibi_ai.cabinet.realtime.on_change"},
 }
 
 doctype_js = {
