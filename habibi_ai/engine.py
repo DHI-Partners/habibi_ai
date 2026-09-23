@@ -310,6 +310,44 @@ class EngineClient:
 			},
 		)
 
+	def add_messages(self, chat_id, messages):
+		"""Дописывает реплики [(роль, текст)] в конец истории чата движка.
+
+		Нужно, когда разговор шёл мимо движка — сотрудник вёл чат вручную:
+		иначе бот, вернувшись, не знал бы, о чём уже договорились. Роли только
+		user и assistant — те, что читает сам движок; system в истории был бы
+		инструкцией модели, взятой из переписки.
+
+		sort — как в createMessage движка: продолжение после текущего максимума
+		чата. Принадлежность чата проверяется get_chat до записи: сервисный
+		токен тенантов не различает и дописал бы в чужую историю.
+		"""
+		if not messages:
+			return []
+		for role, _content in messages:
+			if role not in ("user", "assistant"):
+				raise ValueError(f"роль {role!r} в истории чата недопустима")
+
+		self.get_chat(chat_id)
+		last = self._items(
+			"chat_messages",
+			{
+				"filter": scoped_filter(self.tenant, {"chat_id": {"_eq": chat_id}}),
+				"fields": "sort",
+				"sort": "-sort",
+				"limit": 1,
+			},
+		)
+		start = (last[0].get("sort") or 0) if last else 0
+
+		# Одним запросом: Directus принимает массив, и история не остаётся
+		# дописанной наполовину, если запрос оборвётся посередине
+		payload = [
+			{"chat_id": chat_id, "role": role, "content": content, "sort": start + i, "tenant": self.tenant}
+			for i, (role, content) in enumerate(messages, start=1)
+		]
+		return self._post("items/chat_messages", payload)
+
 	def get_max_loop(self, chat_id, bot_id=None):
 		"""Сколько витков цикла разрешено этому боту, или None, если не задано.
 

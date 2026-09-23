@@ -226,3 +226,67 @@ class TestИмена(unittest.TestCase):
 			decisions.external_user("Telegram Account", "manager", "555"),
 			"telegram:Telegram Account:manager:555",
 		)
+
+
+def said(direction, content, automated=0):
+	return {"direction": direction, "content": content, "is_automated": automated}
+
+
+class TestИсторияПаузы(unittest.TestCase):
+	def test_клиент_пользователь_сотрудник_ассистент_с_пометкой(self):
+		self.assertEqual(
+			decisions.history_from_pause(
+				[said("Incoming", "где заказ?"), said("Outgoing", "везём, 10 минут")]
+			),
+			[("user", "где заказ?"), ("assistant", "[Ответил сотрудник] везём, 10 минут")],
+		)
+
+	def test_ответы_ИИ_пропускаются_они_уже_в_истории_движка(self):
+		self.assertEqual(
+			decisions.history_from_pause(
+				[said("Incoming", "привет"), said("Outgoing", "Здравствуйте!", automated=1)]
+			),
+			[("user", "привет")],
+		)
+
+	def test_подряд_идущие_реплики_одной_роли_склеиваются(self):
+		self.assertEqual(
+			decisions.history_from_pause(
+				[
+					said("Incoming", "где заказ?"),
+					said("Incoming", "уже час жду"),
+					said("Outgoing", "извините"),
+					said("Outgoing", "везём"),
+				]
+			),
+			[
+				("user", "где заказ?\nуже час жду"),
+				("assistant", "[Ответил сотрудник] извините\nвезём"),
+			],
+		)
+
+	def test_пропущенный_ответ_ИИ_не_рвёт_склейку(self):
+		# Между двумя вопросами клиента ответил ИИ — его реплики в истории
+		# движка уже есть, а здесь два вопроса подряд остаются одной репликой
+		self.assertEqual(
+			decisions.history_from_pause(
+				[said("Incoming", "а"), said("Outgoing", "ответ ИИ", automated=1), said("Incoming", "б")]
+			),
+			[("user", "а\nб")],
+		)
+
+	def test_пустые_и_вложения_пропускаются(self):
+		self.assertEqual(
+			decisions.history_from_pause(
+				[
+					said("Incoming", ""),
+					said("Incoming", "[photo]"),
+					said("Outgoing", None),
+					said("Incoming", " да "),
+				]
+			),
+			[("user", "да")],
+		)
+
+	def test_нечего_дописывать(self):
+		self.assertEqual(decisions.history_from_pause([]), [])

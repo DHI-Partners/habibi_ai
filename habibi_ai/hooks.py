@@ -49,7 +49,13 @@ doc_events = {
 		"on_update_after_submit": "habibi_ai.cabinet.realtime.on_change",
 		"on_cancel": "habibi_ai.cabinet.realtime.on_change",
 	},
-	"AI Channel Chat": {"on_update": "habibi_ai.cabinet.realtime.on_change"},
+	"AI Channel Chat": {
+		"on_update": [
+			"habibi_ai.cabinet.realtime.on_change",
+			# Пауза снята галочкой в Desk — переписка без бота уходит в его историю
+			"habibi_ai.channels.telegram.on_pair_update",
+		]
+	},
 }
 
 doctype_js = {

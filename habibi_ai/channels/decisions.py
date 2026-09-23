@@ -141,6 +141,39 @@ def combine(contents):
 	return "\n".join(text for text in (text_of(c) for c in contents) if text)
 
 
+# Пометка ручного ответа в истории движка: модель должна отличать, что
+# обещал человек, от того, что говорила сама, — иначе «я уже говорил» про
+# слова сотрудника.
+STAFF_MARK = "[Ответил сотрудник] "
+
+
+def history_from_pause(messages):
+	"""Переписка за время паузы → реплики [(роль, текст)] для истории движка.
+
+	Входящее — user, ручной ответ — assistant с пометкой STAFF_MARK. Ответы ИИ
+	(is_automated) пропускаются: они уже в истории движка, и второй раз там
+	был бы повтором. Подряд идущие реплики одной роли склеиваются, как в
+	combine: история чередует роли, и три «user» подряд рвали бы её.
+	"""
+	history = []
+	for message in messages:
+		text = text_of(message.get("content"))
+		if not text:
+			continue
+		if message.get("direction") == "Incoming":
+			role = "user"
+		elif message.get("is_automated"):
+			continue
+		else:
+			role = "assistant"
+
+		if history and history[-1][0] == role:
+			history[-1] = (role, f"{history[-1][1]}\n{text}")
+		else:
+			history.append((role, STAFF_MARK + text if role == "assistant" else text))
+	return history
+
+
 def is_write_forbidden(error_text):
 	lowered = (error_text or "").lower()
 	return any(marker in lowered for marker in WRITE_FORBIDDEN_MARKERS)

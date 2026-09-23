@@ -42,6 +42,11 @@ SENDING_MARKER_TTL = 60
 # Длина части ответа до перевода в HTML: теги добавляют символы, а Telegram
 # не примет сообщение длиннее 4096
 PART_LIMIT = 3500
+# Сколько последних сообщений паузы дописывать в историю движка. Пауза в
+# часы — десятки сообщений; предел — на случай, когда отметка пары застряла
+# далеко позади (ИИ неделями был выключен на канале), чтобы в историю бота
+# не ушёл целый архив переписки.
+SYNC_LIMIT = 100
 
 
 def validate_channel(doc, method=None):
@@ -230,6 +235,103 @@ def pause(channel, chat, reason):
 	frappe.db.set_value(PAIR, pair.name, {"ai_paused": 1, "paused_reason": reason, "paused_on": now_datetime()})
 
 
+def _channel_field(channel):
+	return next(f for f, doctype in CHANNEL_FIELDS.items() if doctype == channel[0])
+
+
+def on_pair_update(doc, method=None):
+	"""on_update у AI Channel Chat: паузу сняли галочкой в Desk.
+
+	paused_on берётся из версии до сохранения: validate пары его уже стёр.
+	Кабинет снимает паузу через db.set_value — сюда не попадает и зовёт
+	sync_paused_history сам, так что двойной синхронизации нет.
+	"""
+	before = doc.get_doc_before_save()
+	if not before or not before.ai_paused or doc.ai_paused:
+		return
+	sync_paused_history(
+		(doc.channel_doctype, doc.channel_name), doc.telegram_chat, paused_on=before.paused_on
+	)
+
+
+def sync_paused_history(channel, chat, paused_on=None):
+	"""Снятие паузы: переписка без бота — в историю движка, её вопросы — в отвеченные.
+
+	Бот иначе не знал бы, что обещал сотрудник, и ответил бы второй раз на
+	свежие вопросы клиента, которые сотрудник уже закрыл.
+
+	Отметка сдвигается всегда, даже если движок не ответил: лучше бот без
+	контекста, чем второй ответ клиенту. Коммита здесь нет — сохранение пары
+	или запрос кабинета закоммитят снятие паузы и отметку вместе.
+	"""
+	pair = get_or_create_pair(channel, chat)
+	newest = frappe.get_all(
+		"Telegram Message",
+		filters={"chat": chat, _channel_field(channel): channel[1]},
+		order_by="creation desc",
+		limit=1,
+		pluck="name",
+	)
+	if not newest:
+		return
+
+	since = None
+	if pair.last_processed_message:
+		since = frappe.db.get_value("Telegram Message", pair.last_processed_message, "creation")
+	since = since or paused_on
+	# Ни отметки, ни начала паузы — неизвестно, с какого места диалог шёл
+	# мимо бота; вся история чата в движок не уходит
+	if since:
+		try:
+			_push_history(pair, channel, chat, since)
+		except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+			raise
+		except Exception:
+			frappe.log_error(
+				title="ИИ: переписка паузы не ушла в движок",
+				message=f"Чат: {chat}\n\n{frappe.get_traceback()}",
+			)
+
+	frappe.db.set_value(PAIR, pair.name, "last_processed_message", newest[0])
+
+
+def _push_history(pair, channel, chat, since):
+	settings = channel_settings(*channel)
+	if not settings or not settings.ai_enabled or not settings.ai_bot:
+		return
+	# Служебный чат с кодами входа и чужие группы не должны попасть к LLM
+	# и так — как и в pending_messages
+	if not _chat_is_answerable(chat, settings):
+		return
+
+	rows = frappe.get_all(
+		"Telegram Message",
+		filters={
+			"chat": chat,
+			_channel_field(channel): channel[1],
+			"is_deleted": 0,
+			"creation": (">", since),
+		},
+		fields=["direction", "content", "is_automated"],
+		order_by="creation desc",
+		limit=SYNC_LIMIT,
+	)
+	history = decisions.history_from_pause(reversed(rows))
+	if not history:
+		return
+
+	from habibi_ai import api
+
+	client = api.get_client()
+	bot_id = int(settings.ai_bot)
+	try:
+		client.add_messages(_engine_chat(client, pair, bot_id, chat, commit=False), history)
+	except ChatNotFound:
+		# Чат движка удалили в админке — как в _generate, заводим новый
+		pair.db_set("engine_chat_id", 0)
+		client.add_messages(_engine_chat(client, pair, bot_id, chat, commit=False), history)
+
+
 def pending_messages(channel, chat, last_processed=None, settings=None):
 	"""Входящие этого канала в чате после последнего отвеченного.
 
@@ -241,8 +343,7 @@ def pending_messages(channel, chat, last_processed=None, settings=None):
 	if not _chat_is_answerable(chat, settings):
 		return []
 
-	field = next(f for f, doctype in CHANNEL_FIELDS.items() if doctype == channel[0])
-	filters = {"chat": chat, field: channel[1], "direction": "Incoming"}
+	filters = {"chat": chat, _channel_field(channel): channel[1], "direction": "Incoming"}
 	if last_processed:
 		created = frappe.db.get_value("Telegram Message", last_processed, "creation")
 		if created:
@@ -393,7 +494,8 @@ def _generate(pair, bot_id, text, chat, message_at=None):
 		except ChatNotFound:
 			if attempt == 2:
 				raise
-			pair.db_set("engine_chat_id", None)
+			# 0, а не None: поле Int, колонка NOT NULL — None ронял бы запись
+			pair.db_set("engine_chat_id", 0)
 			frappe.db.commit()
 		except (EngineError, requests.RequestException):
 			if attempt == 2:
@@ -401,15 +503,17 @@ def _generate(pair, bot_id, text, chat, message_at=None):
 			time.sleep(RETRY_DELAY_SECONDS)
 
 
-def _engine_chat(client, pair, bot_id, chat):
+def _engine_chat(client, pair, bot_id, chat, commit=True):
 	if pair.engine_chat_id:
 		return pair.engine_chat_id
 	chat_id = frappe.db.get_value("Telegram Chat", chat, "chat_id")
 	created = client.create_chat(bot_id, decisions.external_user(pair.channel_doctype, pair.channel_name, chat_id))
 	pair.db_set("engine_chat_id", created["id"])
 	# Сразу: следующий раунд начинается с rollback, и без коммита чат в
-	# движке заводился бы заново на каждое сообщение
-	frappe.db.commit()
+	# движке заводился бы заново на каждое сообщение. Вне reply_job (снятие
+	# паузы) коммитит вызывающий — вместе со своей записью.
+	if commit:
+		frappe.db.commit()
 	return created["id"]
 
 

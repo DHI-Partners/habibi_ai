@@ -137,6 +137,9 @@ def pause(chat):
 def resume(chat):
 	p = _pair_for_write(chat)
 	frappe.db.set_value(PAIR, p.name, {"ai_paused": 0, "paused_reason": None, "paused_on": None})
+	# Переписка сотрудника — в историю бота, её вопросы — в отвеченные.
+	# db.set_value не зовёт on_update, так что хук Desk второй раз этого не сделает
+	telegram.sync_paused_history((p.channel_doctype, p.channel_name), chat, paused_on=p.paused_on)
 	_notify_chat_changed(chat)
 
 
