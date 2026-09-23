@@ -148,16 +148,59 @@ def quote_id(text):
 	return text.split()[1].rstrip(",")
 
 
-class TestЗаказ(IntegrationTestCase):
+class OrderFixtures:
+	"""Готовый заказ через инструменты бота — общее для тестов бота
+	(`test_orders.py`) и действий владельца над готовым черновиком
+	(`test_cabinet_orders.py`)."""
+
 	@classmethod
 	def setUpClass(cls):
 		super().setUpClass()
 		_setup_erp()
 
 	def setUp(self):
+		super().setUp()
 		# Свой чат на тест: create_order берёт последний расчёт чата, и
 		# расчёты соседних тестов не должны в него попадать
 		self.chat = next(_chats)
+
+	def make_bot_order(self):
+		"""Черновик SO как из Telegram: свой бот и чат, привязка канала
+		(`AI Channel Chat`), расчёт и согласие клиента через тот же чат.
+		`self.quote_chat` — имя получившегося `Telegram Chat`."""
+		# validate() бота стучится в реальный Telegram API за getMe — в
+		# тестах токена нет, подставляем ответ так же, как в habibi_telegram
+		with patch(
+			"habibi_telegram.telegram_api.TelegramBotAPI.get_me",
+			return_value={"is_bot": True, "username": "habibi_test_bot"},
+		):
+			bot = frappe.get_doc(
+				{"doctype": "Telegram Bot", "title": f"_Habibi Test Bot {self.chat}", "api_token": "test-token"}
+			).insert(ignore_permissions=True)
+		chat = frappe.get_doc(
+			{
+				"doctype": "Telegram Chat",
+				"chat_id": str(900000 + self.chat),
+				"type": "private",
+				"title": "Тест Кабинет",
+			}
+		).insert(ignore_permissions=True)
+		frappe.get_doc(
+			{
+				"doctype": "AI Channel Chat",
+				"channel_doctype": "Telegram Bot",
+				"channel_name": bot.name,
+				"telegram_chat": chat.name,
+			}
+		).insert(ignore_permissions=True)
+		self.quote_chat = chat.name
+
+		channel = ("Telegram Chat", chat.name)
+		tools.execute("quote_order", ORDER, ctx("t1", self.chat, channel))
+		orders.mark_answered("t1")
+		tools.execute("create_order", {}, ctx("t2", self.chat, channel))
+		so_name = frappe.db.get_value("AI Order Quote", {"channel_name": chat.name}, "sales_order")
+		return frappe.get_doc("Sales Order", so_name)
 
 	def _quote(self, turn="t1", sent=True, **kw):
 		text = tools.execute("quote_order", {**ORDER, **kw}, ctx(turn, self.chat))
@@ -169,6 +212,8 @@ class TestЗаказ(IntegrationTestCase):
 	def _create(self, turn="t2", **kw):
 		return tools.execute("create_order", {}, ctx(turn, self.chat, **kw))
 
+
+class TestЗаказ(OrderFixtures, IntegrationTestCase):
 	def test_расчёт_считает_итог_и_ндс_в_erp(self):
 		text = self._quote()
 		# 2490 + 2×690 = 3870; НДС 12% внутри цены = 3870×12/112 = 414.64
@@ -310,14 +355,9 @@ class TestЗаказ(IntegrationTestCase):
 			frappe.db.set_single_value("Habibi AI Settings", "company", CO)
 
 
-class TestПривязкаЧата(IntegrationTestCase):
+class TestПривязкаЧата(OrderFixtures, IntegrationTestCase):
 	"""Совмещённая схема: чат без привязки — имя и телефон, после заказа
 	чат привязан, и следующий расчёт их уже не просит."""
-
-	@classmethod
-	def setUpClass(cls):
-		super().setUpClass()
-		_setup_erp()
 
 	def test_после_заказа_чат_узнаёт_клиента(self):
 		if "habibi_telegram" not in frappe.get_installed_apps():
