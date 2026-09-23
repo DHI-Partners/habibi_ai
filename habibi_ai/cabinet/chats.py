@@ -8,7 +8,7 @@ import frappe
 from frappe import _
 from frappe.utils import now_datetime
 
-from habibi_ai.channels import telegram
+from habibi_ai.channels import decisions, telegram
 
 PAIR = "AI Channel Chat"
 PAUSED_BY_STAFF = "Выключено вручную"
@@ -155,13 +155,24 @@ def send(chat, text):
 	# ответов бота. Здесь писал человек, и лента должна это показать — но
 	# только у сообщений, которые действительно наш ответ: если параллельно
 	# успел ответить бот (его раунд стартовал до пары), его сообщение не
-	# должно перекраситься в «сотрудник» лишь потому, что оно свежее нашего.
-	# Долгий текст Telegram режет на части — сравниваем и с частью текста.
+	# должно перекраситься в «сотрудник» лишь потому, что оно свежее нашего
+	# или начинается так же (короткое «Да» бота — не префикс нашего «Да,
+	# сейчас уточню», раз он весь целиком отдельное сообщение).
+	#
+	# Сравниваем с точными частями, на которые telegram.send() режет текст
+	# (decisions.split_text с тем же лимитом) — длинный ответ уходит
+	# несколькими сообщениями. Каждая часть могла лечь в историю в одном из
+	# двух видов: как HTML-разметка (её и хранит content — Telegram
+	# возвращает результат без тегов, только оформленный текст) либо как
+	# обычный текст, если разметка не прошла и telegram.send() откатился на
+	# него (decisions.is_parse_error).
+	parts = decisions.split_text(sent, telegram.PART_LIMIT)
+	expected = {part for part in parts} | {decisions.to_telegram_html(part) for part in parts}
 	candidates = frappe.get_all(
 		"Telegram Message",
 		filters={"chat": chat, "direction": "Outgoing", "creation": [">=", sent_at]},
 		fields=["name", "content"],
 	)
-	ours = [c.name for c in candidates if c.content and (c.content == sent or sent.startswith(c.content))]
+	ours = [c.name for c in candidates if c.content in expected]
 	for name in ours:
 		frappe.db.set_value("Telegram Message", name, "is_automated", 0, update_modified=False)

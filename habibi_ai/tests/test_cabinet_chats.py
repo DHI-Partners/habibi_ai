@@ -157,6 +157,74 @@ class TestCabinetChats(IntegrationTestCase):
 		self.assertEqual(ours["author"], "staff")
 		self.assertEqual(bots["author"], "bot")
 
+	def test_длинный_ответ_все_части_от_сотрудника(self):
+		"""Telegram режет длинный текст на части (decisions.split_text) — все
+		части нашего ответа должны стать author == staff, а не только первая:
+		startswith по первой части не покрывает вторую и следующие."""
+		staff_text = "Первая часть текста. Вторая часть текста. Третья часть."
+
+		def fake_send(channel, chat, text):
+			# как настоящий telegram.send(): режет на части тем же лимитом и
+			# логирует каждую отдельным Outgoing-сообщением
+			for part in chats.decisions.split_text(text, chats.telegram.PART_LIMIT):
+				frappe.get_doc(
+					{
+						"doctype": "Telegram Message",
+						"chat": chat,
+						"direction": "Outgoing",
+						"is_automated": 1,
+						"content": part,
+						"telegram_bot": self.bot,
+					}
+				).db_insert()
+
+		with (
+			patch("habibi_ai.cabinet.chats.telegram.PART_LIMIT", 12),
+			patch("habibi_ai.cabinet.chats.telegram.send", side_effect=fake_send),
+		):
+			chats.send(self.chat.name, staff_text)
+		expected_parts = chats.decisions.split_text(staff_text, 12)
+		self.assertGreaterEqual(len(expected_parts), 2)
+		authors = {m["text"]: m["author"] for m in chats.messages(self.chat.name)}
+		for part in expected_parts:
+			self.assertEqual(authors[part], "staff")
+
+	def test_короткий_ответ_бота_не_совпадает_по_префиксу(self):
+		"""«Да» бота — не префикс нашего «Да, сейчас уточню»: перекраска ищет
+		точное совпадение с частью текста, а не startswith, иначе короткий
+		параллельный ответ бота перекрасился бы в «сотрудник»."""
+
+		def fake_send(channel, chat, text):
+			frappe.get_doc(
+				{
+					"doctype": "Telegram Message",
+					"chat": chat,
+					"direction": "Outgoing",
+					"is_automated": 1,
+					"content": text,
+					"telegram_bot": self.bot,
+				}
+			).db_insert()
+			# тем временем бот успел коротко ответить своим раундом
+			frappe.get_doc(
+				{
+					"doctype": "Telegram Message",
+					"chat": chat,
+					"direction": "Outgoing",
+					"is_automated": 1,
+					"content": "Да",
+					"telegram_bot": self.bot,
+				}
+			).db_insert()
+
+		with patch("habibi_ai.cabinet.chats.telegram.send", side_effect=fake_send):
+			chats.send(self.chat.name, "Да, сейчас уточню")
+		rows = chats.messages(self.chat.name)
+		ours = next(m for m in rows if m["text"] == "Да, сейчас уточню")
+		bots = next(m for m in rows if m["text"] == "Да")
+		self.assertEqual(ours["author"], "staff")
+		self.assertEqual(bots["author"], "bot")
+
 	def test_пустой_ответ_не_отправляется(self):
 		with self.assertRaises(frappe.ValidationError):
 			chats.send(self.chat.name, "   ")
