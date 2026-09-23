@@ -42,3 +42,8 @@ doctype_js = {
 # Черновик заказа, созданный ботом, оператор должен мочь удалить: ссылка из
 # расчёта AI Order Quote иначе блокирует удаление Sales Order.
 ignore_links_on_delete = ["AI Order Quote"]
+
+# Кабинет (habibi_ui) не импортирует habibi_ai — связь только через хуки:
+# адаптер полей, которых нет в самом DocType, и флаги включённых возможностей.
+habibi_cabinet_adapters = {"selling_price": "habibi_ai.cabinet.adapters.selling_price"}
+habibi_cabinet_features = ["habibi_ai.api.features_hook"]
