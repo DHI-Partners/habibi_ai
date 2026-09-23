@@ -13,7 +13,7 @@ Habibi Staff или System Manager. В малом бизнесе это одна
 """
 
 import frappe
-from frappe.utils.user import get_users_with_role
+from frappe.query_builder import DocType
 
 EVENT = "habibi_cabinet"
 CABINET_ROLES = ("Habibi Owner", "Habibi Staff", "System Manager")
@@ -21,14 +21,46 @@ CABINET_ROLES = ("Habibi Owner", "Habibi Staff", "System Manager")
 
 def _recipients():
 	"""Пользователи кабинета без дублей — одна и та же учётка может держать
-	сразу несколько из перечисленных ролей."""
-	users = set()
-	for role in CABINET_ROLES:
-		users.update(get_users_with_role(role))
-	return users
+	сразу несколько из перечисленных ролей.
+
+	Один запрос с DISTINCT вместо frappe.utils.user.get_users_with_role в
+	цикле по ролям (там — отдельный запрос на роль): семантика та же, что и у
+	него — enabled == 1, Administrator не считается (у него роли не через
+	Has Role, и рассылка ему как техническому пользователю не нужна)."""
+	User = DocType("User")
+	HasRole = DocType("Has Role")
+	return (
+		frappe.qb.from_(HasRole)
+		.from_(User)
+		.where(
+			HasRole.role.isin(CABINET_ROLES)
+			& (User.name != "Administrator")
+			& (User.enabled == 1)
+			& (HasRole.parent == User.name)
+		)
+		.select(User.name)
+		.distinct()
+		.run(pluck=True)
+	)
 
 
 def on_change(doc, method=None):
+	"""Хук на after_insert/on_update/on_submit нескольких доктайпов.
+
+	Ошибка здесь не должна ронять запись сообщения, обновление заказа или
+	паузу чата — событие кабинета вторично по отношению к самой операции.
+	Дедлок и таймаут блокировки — исключение: после них транзакция уже
+	откатилась базой, и проглоти мы ошибку — вызывающий счёл бы запись
+	состоявшейся. Пусть он узнает и повторит (как в on_message_insert)."""
+	try:
+		_on_change(doc)
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
+	except Exception:
+		frappe.log_error(title="Кабинет: realtime-событие", message=frappe.get_traceback())
+
+
+def _on_change(doc):
 	if doc.doctype == "Sales Order":
 		if not frappe.db.exists("AI Order Quote", {"sales_order": doc.name}):
 			return

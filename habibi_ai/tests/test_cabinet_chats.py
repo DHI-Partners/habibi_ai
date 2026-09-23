@@ -95,7 +95,7 @@ class TestCabinetChats(IntegrationTestCase):
 		"""pause/resume пишут через frappe.db.set_value — on_update не сработает,
 		поэтому кабинет должен получить событие явным вызовом realtime."""
 		with (
-			patch("habibi_ai.cabinet.realtime.get_users_with_role", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime._recipients", return_value=["owner@example.com"]),
 			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
 		):
 			chats.pause(self.chat.name)
@@ -112,7 +112,7 @@ class TestCabinetChats(IntegrationTestCase):
 	def test_ответ_сотрудника_ставит_паузу_и_уходит(self):
 		with (
 			patch("habibi_ai.cabinet.chats.telegram.send") as send,
-			patch("habibi_ai.cabinet.realtime.get_users_with_role", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime._recipients", return_value=["owner@example.com"]),
 			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
 		):
 			chats.send(self.chat.name, "Сейчас уточню")
