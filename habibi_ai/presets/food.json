@@ -33,7 +33,7 @@
   "permissions": {
     "Habibi Owner": {"Sales Order": ["read", "write", "submit", "cancel", "delete"], "Customer": ["read"], "Item": ["read", "write", "create"],
       "Item Price": ["read", "write", "create"], "Item Group": ["read"], "Delivery Zone": ["read", "write"], "Working Hours": ["read", "write", "create"],
-      "Telegram Chat": ["read"], "Telegram Message": ["read"], "Telegram Bot": ["read", "write", "create"], "AI Channel Chat": ["read", "write"], "AI Order Quote": ["read"],
+      "Telegram Chat": ["read"], "Telegram Message": ["read"], "Telegram Account": ["read", "write", "create"], "AI Channel Chat": ["read", "write"], "AI Order Quote": ["read"],
       "Business Profile": ["read", "write"], "Habibi AI Settings": ["read"], "Price List": ["read"], "Company": ["read"]},
     "Habibi Staff": {"Sales Order": ["read", "write", "submit", "cancel"], "Customer": ["read"], "Item": ["read"], "Telegram Chat": ["read"],
       "Telegram Message": ["read"], "AI Channel Chat": ["read", "write"], "AI Order Quote": ["read"], "Habibi AI Settings": ["read"], "Company": ["read"]}

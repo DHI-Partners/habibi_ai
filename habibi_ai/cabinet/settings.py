@@ -4,6 +4,8 @@
 собирал его из кусков и не мог сохранить половину.
 """
 
+import re
+
 import frappe
 from frappe import _
 from frappe.utils import get_time
@@ -117,56 +119,255 @@ def save_profile(values):
 	return get_profile()
 
 
-def _bot_name():
-	"""Бот по умолчанию; если ни один не отмечен — любой (для сайтов, где
-	бот один и заведён руками до кабинета)."""
-	return frappe.db.get_value("Telegram Bot", {"is_default": 1}) or frappe.db.get_value("Telegram Bot", {})
+# -- Telegram-аккаунт ---------------------------------------------------------
+#
+# Клиенты пишут в настоящий Telegram-аккаунт бизнеса (Telegram Account, MTProto
+# из habibi_telegram), и ИИ отвечает там же. Telegram Bot — бот уведомлений
+# сотрудникам, в кабинете его нет.
+#
+# Вход — как на форме аккаунта: телефон → код → (пароль двухэтапной проверки).
+# Сами шаги делают методы документа; здесь — права, ключи платформы, включение
+# ИИ после входа и перевод ошибок Telethon на человеческий русский.
+
+ACCOUNT = "Telegram Account"
+
+# status доктайпа → состояние экрана кабинета
+STATES = {"Code Sent": "code_sent", "Password Required": "password_needed", "Connected": "connected"}
+
+AI_NOT_READY = _("ИИ-бот не выбран — обратитесь к администратору")
+
+# Имя класса исключения Telethon → что показать владельцу. Сверяем по имени,
+# а не isinstance: user_client оборачивает их во frappe.throw, и до нас
+# доходит ValidationError, у которого исходное исключение лежит в __context__.
+TELEGRAM_ERRORS = {
+	"PhoneNumberInvalidError": _("Telegram не знает такой номер — проверьте его"),
+	"PhoneNumberBannedError": _("Этот номер заблокирован в Telegram"),
+	"PhoneNumberUnoccupiedError": _("На этот номер не зарегистрирован Telegram"),
+	"PhoneNumberFloodError": _("Слишком много попыток входа с этого номера — попробуйте позже"),
+	"PhoneCodeInvalidError": _("Неверный код"),
+	"PhoneCodeEmptyError": _("Введите код из Telegram"),
+	"PhoneCodeExpiredError": _("Код истёк — запросите новый"),
+	"PasswordHashInvalidError": _("Неверный пароль двухэтапной проверки"),
+	"AuthKeyUnregisteredError": _("Telegram завершил сессию — войдите заново"),
+	"SessionRevokedError": _("Telegram завершил сессию — войдите заново"),
+}
+
+
+def _account_name():
+	"""Аккаунт кабинета.
+
+	На сайте бизнеса аккаунт один. Если их несколько (заведены руками из
+	десктопа), кабинет показывает тот, в котором включён ИИ, — именно в нём
+	отвечает бот; иначе самый ранний: он и был «аккаунтом компании» до кабинета.
+	"""
+	return frappe.db.get_value(ACCOUNT, {"ai_enabled": 1}, order_by="creation asc") or frappe.db.get_value(
+		ACCOUNT, {}, order_by="creation asc"
+	)
+
+
+def _names_in_chain(error):
+	"""Имена классов исключения и всех его причин (__cause__ / __context__)."""
+	seen = []
+	while error is not None and error not in seen:
+		seen.append(error)
+		error = error.__cause__ or error.__context__
+	return [(e, {c.__name__ for c in type(e).__mro__}) for e in seen]
+
+
+def _safe_telegram_error(error):
+	"""Русский текст для ошибки входа. Сам текст исключения наружу не идёт:
+	в нём бывают номер, phone_code_hash и прочее, что показывать не нужно."""
+	for e, names in _names_in_chain(error):
+		if names & {"FloodWaitError", "FloodPremiumWaitError"}:
+			seconds = getattr(e, "seconds", None)
+			if seconds:
+				return _("Слишком много попыток — подождите {0} мин.").format(max(1, round(seconds / 60)))
+			return _("Слишком много попыток — попробуйте позже")
+		for name, text in TELEGRAM_ERRORS.items():
+			if name in names:
+				return text
+	return _("Telegram не принял запрос — попробуйте ещё раз позже")
+
+
+def _call_telegram(title, fn):
+	"""Вызов метода документа с чистым выходом наружу.
+
+	user_client сам делает frappe.throw(describe_error(e)): это сообщение уже
+	лежит в message_log и ушло бы клиенту в _server_messages первым, поэтому
+	всё, что метод успел туда положить, выбрасываем. Полный traceback — в лог,
+	как в cabinet.orders/chats.
+	"""
+	log = frappe.local.message_log
+	mark = len(log)
+	try:
+		return fn()
+	except frappe.PermissionError:
+		raise
+	except Exception as e:
+		del log[mark:]
+		frappe.log_error(title=title, message=frappe.get_traceback())
+		frappe.throw(_safe_telegram_error(e))
+
+
+def _get_account(ptype):
+	name = _account_name()
+	if not name:
+		frappe.throw(_("Telegram-аккаунт ещё не подключён — начните с номера телефона"))
+	doc = frappe.get_doc(ACCOUNT, name)
+	doc.check_permission(ptype)
+	return doc
 
 
 @frappe.whitelist()
 def telegram_status():
-	if not frappe.has_permission("Telegram Bot", "read"):
+	"""Состояние входа для экрана. api_hash, session_string, phone_code_hash
+	и сырой last_error наружу не отдаются никогда."""
+	if not frappe.has_permission(ACCOUNT, "read"):
 		frappe.throw(_("Нет доступа к Telegram"), frappe.PermissionError)
-	name = _bot_name()
-	if not name:
-		return {"connected": False, "username": None, "last_message_at": None}
-	bot = frappe.db.get_value("Telegram Bot", name, ["username", "webhook_enabled"], as_dict=True)
-	last = frappe.db.get_value(
-		"Telegram Message", {"telegram_bot": name}, "creation", order_by="creation desc"
-	)
-	return {
-		"connected": bool(bot.webhook_enabled),
-		"username": bot.username,
-		"last_message_at": str(last) if last else None,
+	status = {
+		"state": "none",
+		"phone": None,
+		"full_name": None,
+		"username": None,
+		"last_message_at": None,
+		"error": None,
+		"ai_ready": False,
+		"ai_note": None,
 	}
+	name = _account_name()
+	if not name:
+		return status
+	doc = frappe.get_doc(ACCOUNT, name)
+	doc.check_permission("read")
+	state = STATES.get(doc.status, "none")
+	if state == "none" and doc.last_error and doc.account_id:
+		# Был подключён, а теперь нет и с ошибкой: сессию отозвали из
+		# приложения Telegram (синхронизация пишет это в last_error)
+		state = "error"
+	ai_ready = bool(doc.get("ai_enabled") and doc.get("ai_bot"))
+	status.update(
+		state=state,
+		phone=doc.phone or None,
+		full_name=doc.full_name or None,
+		username=doc.username or None,
+		ai_ready=ai_ready,
+		ai_note=None if ai_ready else AI_NOT_READY,
+	)
+	if state == "error":
+		status["error"] = _("Telegram завершил сессию — войдите заново")
+	elif state == "connected" and not (doc.enabled and doc.sync_enabled):
+		status["error"] = _("Приём сообщений выключен — обратитесь к администратору")
+	elif state == "connected" and doc.last_error:
+		status["error"] = _("Не удалось забрать новые сообщения — повторим автоматически")
+	last = frappe.db.get_value(
+		"Telegram Message", {"telegram_account": name}, "creation", order_by="creation desc"
+	)
+	status["last_message_at"] = str(last) if last else None
+	return status
 
 
 @frappe.whitelist(methods=["POST"])
-def connect_telegram(token):
-	"""Создаёт или обновляет бота по умолчанию и ставит вебхук.
+def request_code(phone):
+	"""Первый шаг входа: завести аккаунт (или сменить номер) и запросить код.
 
-	Токен теряем сразу за пределами этой функции: ошибки Telegram-клиента
-	(и его же сетевые сбои) несут в тексте адрес вида /bot<TOKEN>/..., поэтому
-	наружу уходит только safe-текст, полный traceback — в лог. Тот же приём,
-	что в cabinet.orders/chats для send().
+	api_id/api_hash — одни на платформу (приложение с my.telegram.org), лежат в
+	common_site_config: владелец бизнеса их не знает и знать не должен.
 	"""
-	token = (token or "").strip()
-	if not token:
-		frappe.throw(_("Токен не может быть пустым"))
+	phone = (phone or "").strip()
+	if not phone:
+		frappe.throw(_("Введите номер телефона"))
+	api_id = frappe.conf.get("telegram_api_id")
+	api_hash = frappe.conf.get("telegram_api_hash")
 
-	name = _bot_name()
-	bot = frappe.get_doc("Telegram Bot", name) if name else frappe.new_doc("Telegram Bot", title="Бот компании")
-	_check_create_or_write(bot)
-	bot.api_token = token
-	bot.webhook_enabled = 1
+	name = _account_name()
+	doc = (
+		frappe.get_doc(ACCOUNT, name)
+		if name
+		else frappe.new_doc(ACCOUNT, title="Telegram " + re.sub(r"[^\d+]", "", phone))
+	)
+	_check_create_or_write(doc)
+	if doc.status == "Connected":
+		frappe.throw(_("Аккаунт уже подключён — сначала отключите его"))
+	if not (api_id and api_hash):
+		frappe.throw(_("Подключение Telegram не настроено на сервере — обратитесь к администратору"))
+
+	doc.phone = phone
+	doc.api_id = str(api_id)
+	doc.api_hash = api_hash
+	# Входящие забирает cron/слушатель habibi_telegram только у включённых
+	# аккаунтов с sync_enabled — см. user_client.sync_all_accounts
+	doc.enabled = 1
+	doc.sync_enabled = 1
+	if doc.is_new():
+		doc.insert()
+	else:
+		doc.save()
+	_call_telegram(f"Не удалось запросить код Telegram ({doc.name})", doc.request_code)
+	return telegram_status()
+
+
+@frappe.whitelist(methods=["POST"])
+def sign_in(code=None, password=None):
+	"""Второй шаг: код, а если Telegram попросил — пароль двухэтапной проверки.
+
+	Код и пароль никуда не пишутся: уходят прямо в метод документа.
+	"""
+	code = (code or "").strip()
+	if not code and not password:
+		frappe.throw(_("Введите код из Telegram"))
+	doc = _get_account("write")
+	result = _call_telegram(
+		f"Не удалось войти в Telegram ({doc.name})",
+		lambda: doc.sign_in(code=code or None, password=password or None),
+	)
+	if not (result or {}).get("password_required"):
+		_enable_ai(doc.name)
+	return telegram_status()
+
+
+def _enable_ai(name):
+	"""После входа — ИИ отвечает в личных переписках аккаунта.
+
+	Заданного бота не трогаем. Не задан — ставим, только если у тенанта он
+	ровно один: выбирать за владельца из нескольких нельзя. Движок недоступен
+	или бот не прошёл validate_channel — вход всё равно состоялся: сессию уже
+	выдал Telegram, и откатывать её из-за ИИ нельзя. ИИ тогда остаётся
+	выключенным, экран покажет ai_ready: false.
+	"""
+	log = frappe.local.message_log
+	mark = len(log)
+	frappe.db.savepoint("cabinet_telegram_ai")
 	try:
-		if bot.is_new():
-			bot.insert()
-		else:
-			bot.save()
-		bot.set_webhook()
-	except Exception as e:
-		frappe.log_error(title="Не удалось подключить Telegram-бота", message=frappe.get_traceback())
-		safe = getattr(e, "description", None) or _("Telegram недоступен: проверьте токен и повторите позже")
-		frappe.throw(safe)
+		doc = frappe.get_doc(ACCOUNT, name)
+		doc.enabled = 1
+		doc.sync_enabled = 1
+		doc.ai_reply_in_groups = 0
+		doc.save()
+		if not doc.get("ai_bot"):
+			from habibi_ai import api
+
+			bots = api.get_client().list_bots()
+			if len(bots) != 1:
+				return
+			doc.ai_bot = str(bots[0]["id"])
+		doc.ai_enabled = 1
+		doc.save()
+	except Exception:
+		frappe.db.rollback(save_point="cabinet_telegram_ai")
+		del log[mark:]
+		frappe.log_error(
+			title=f"Не удалось включить ИИ на Telegram-аккаунте {name}", message=frappe.get_traceback()
+		)
+
+
+@frappe.whitelist(methods=["POST"])
+def disconnect():
+	doc = _get_account("write")
+	_call_telegram(f"Не удалось отключить Telegram ({doc.name})", doc.log_out)
+	# Старая ошибка синхронизации после ручного выхода — уже не новость:
+	# иначе экран показал бы «сессия завершена» вместо обычного входа
+	doc = frappe.get_doc(ACCOUNT, doc.name)
+	if doc.last_error:
+		doc.last_error = ""
+		doc.save()
 	return telegram_status()
