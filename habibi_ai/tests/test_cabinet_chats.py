@@ -121,6 +121,42 @@ class TestCabinetChats(IntegrationTestCase):
 			chats.send(self.chat.name, "Сейчас уточню")
 		self.assertEqual(chats.messages(self.chat.name)[-1]["author"], "staff")
 
+	def test_параллельный_ответ_бота_не_перекрашивается_в_сотрудника(self):
+		"""Пока наш send() ставит паузу и шлёт, бот-раунд, начатый до паузы,
+		может дописать в чат свой ответ. Перекраска must find только наше
+		сообщение — по совпадению текста, а не «последнее исходящее»."""
+
+		def fake_send(channel, chat, text):
+			frappe.get_doc(
+				{
+					"doctype": "Telegram Message",
+					"chat": chat,
+					"direction": "Outgoing",
+					"is_automated": 1,
+					"content": text,
+					"telegram_bot": self.bot,
+				}
+			).db_insert()
+			# тем временем бот успел ответить своим раундом — это не ответ сотрудника
+			frappe.get_doc(
+				{
+					"doctype": "Telegram Message",
+					"chat": chat,
+					"direction": "Outgoing",
+					"is_automated": 1,
+					"content": "Автоматический ответ бота",
+					"telegram_bot": self.bot,
+				}
+			).db_insert()
+
+		with patch("habibi_ai.cabinet.chats.telegram.send", side_effect=fake_send):
+			chats.send(self.chat.name, "Сейчас уточню")
+		rows = chats.messages(self.chat.name)
+		ours = next(m for m in rows if m["text"] == "Сейчас уточню")
+		bots = next(m for m in rows if m["text"] == "Автоматический ответ бота")
+		self.assertEqual(ours["author"], "staff")
+		self.assertEqual(bots["author"], "bot")
+
 	def test_пустой_ответ_не_отправляется(self):
 		with self.assertRaises(frappe.ValidationError):
 			chats.send(self.chat.name, "   ")

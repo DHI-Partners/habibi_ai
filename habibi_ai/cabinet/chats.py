@@ -6,6 +6,7 @@
 
 import frappe
 from frappe import _
+from frappe.utils import now_datetime
 
 from habibi_ai.channels import telegram
 
@@ -133,8 +134,13 @@ def send(chat, text):
 		frappe.throw(_("Пустое сообщение"))
 	p = _pair_for_write(chat)
 	telegram.pause((p.channel_doctype, p.channel_name), chat, PAUSED_BY_STAFF)
+	sent = text.strip()
+	# Метка времени — сразу перед отправкой, а не раньше: пауза уже могла
+	# впустить бот-раунд, начатый до неё, и его сообщение не должно попасть
+	# в диапазон «наше».
+	sent_at = now_datetime()
 	try:
-		telegram.send((p.channel_doctype, p.channel_name), chat, text.strip())
+		telegram.send((p.channel_doctype, p.channel_name), chat, sent)
 	except Exception as e:
 		# Полный текст — только в лог: у сетевых ошибок Telegram-клиента в
 		# сообщении зашит URL вида /bot<TOKEN>/..., и это утекло бы наружу.
@@ -146,13 +152,16 @@ def send(chat, text):
 		safe = getattr(e, "description", None) or _("Telegram недоступен, попробуйте позже")
 		frappe.throw(safe)
 	# send помечает сообщение automated=True — это защита от самопаузы для
-	# ответов бота. Здесь писал человек, и лента должна это показать.
-	last = frappe.get_all(
+	# ответов бота. Здесь писал человек, и лента должна это показать — но
+	# только у сообщений, которые действительно наш ответ: если параллельно
+	# успел ответить бот (его раунд стартовал до пары), его сообщение не
+	# должно перекраситься в «сотрудник» лишь потому, что оно свежее нашего.
+	# Долгий текст Telegram режет на части — сравниваем и с частью текста.
+	candidates = frappe.get_all(
 		"Telegram Message",
-		filters={"chat": chat, "direction": "Outgoing"},
-		order_by="creation desc",
-		pluck="name",
-		limit=1,
+		filters={"chat": chat, "direction": "Outgoing", "creation": [">=", sent_at]},
+		fields=["name", "content"],
 	)
-	if last:
-		frappe.db.set_value("Telegram Message", last[0], "is_automated", 0, update_modified=False)
+	ours = [c.name for c in candidates if c.content and (c.content == sent or sent.startswith(c.content))]
+	for name in ours:
+		frappe.db.set_value("Telegram Message", name, "is_automated", 0, update_modified=False)
