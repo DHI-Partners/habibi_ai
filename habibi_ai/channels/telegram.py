@@ -335,11 +335,26 @@ def _reply_round(channel, chat):
 		_mark_processed(pair, last)
 		return False
 
+	# Записанное ходом (расчёт заказа) фиксируем до отправки, и отправка идёт
+	# в свежем снимке. Генерация длится секунды, и за это время слушатель
+	# MTProto успевает обновить превью того же Telegram Chat; habibi_telegram,
+	# записывая наш ответ в журнал, правил бы строку по устаревшему снимку —
+	# MariaDB отвергает это (1020) и откатывает весь раунд.
+	frappe.db.commit()
+
 	# До отправки, а не после: слушатель MTProto может записать наш ответ
 	# раньше, чем send() вернётся, и хук поставил бы паузу на него
 	frappe.cache().set_value(sending_marker(pair.name), 1, expires_in_sec=SENDING_MARKER_TTL)
 	try:
 		send(channel, chat, reply)
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		# Отправка в Telegram до базы не пишет — сбой случился уже в записи
+		# копии ответа в журнал. Клиент ответ получил: откатываем только
+		# несостоявшуюся запись и считаем ответ отправленным, иначе на «да»
+		# create_order не увидит отметки и бот повторит расчёт вместо заказа.
+		# Копию в журнал запишет слушатель MTProto.
+		frappe.db.rollback()
+		frappe.log_error(title="ИИ: ответ ушёл, журнал Telegram не записан", message=frappe.get_traceback())
 	except Exception as e:
 		if decisions.is_write_forbidden(str(e)):
 			pause(channel, chat, REASON_FORBIDDEN)

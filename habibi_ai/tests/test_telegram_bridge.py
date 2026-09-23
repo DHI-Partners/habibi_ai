@@ -325,6 +325,42 @@ class TestЗадача(_Base):
 			bridge.reply_job("Telegram Bot", BOT, self.chat)
 		return client, turn, telegram_api
 
+	def test_сбой_журнала_после_отправки_не_отменяет_отметку_расчёта(self):
+		# habibi_telegram пишет копию отправленного в журнал и обновляет превью
+		# чата; слушатель мог обновить ту же строку раньше — MariaDB отвергает
+		# запись (1020). Клиент ответ уже получил: расчёт должен считаться
+		# отправленным, а сообщения — обработанными, иначе на «да» бот повторит
+		# расчёт вместо заказа.
+		with patch("frappe.enqueue"):
+			last = incoming(self.chat, 30, "Classic Burger, оформляйте")
+		turn = Mock(return_value={"response": "Расчёт AIQ-1", "debug": [], "turn_id": "t-30"})
+		with (
+			patch("habibi_ai.channels.telegram.send", side_effect=frappe.QueryDeadlockError("1020")),
+			patch("habibi_ai.tools.orders.mark_answered") as mark_answered,
+			patch("habibi_ai.channels.telegram._report") as report,
+		):
+			self._run(run_turn=turn)
+		mark_answered.assert_called_once_with("t-30")
+		report.assert_not_called()
+		pair = decisions.pair_name(*self.channel, self.chat)
+		self.assertEqual(frappe.db.get_value(bridge.PAIR, pair, "last_processed_message"), last.name)
+
+	def test_записанное_ходом_фиксируется_до_отправки(self):
+		# Расчёт, созданный инструментом во время хода, коммитится до отправки:
+		# отправка идёт в свежем снимке, и её сбой не откатывает расчёт
+		with patch("frappe.enqueue"):
+			incoming(self.chat, 31, "Сколько стоит?")
+		order = []
+		real_commit = frappe.db.commit
+		turn = Mock(side_effect=lambda *a, **k: (order.append("turn"), {"response": "ответ ИИ", "debug": []})[1])
+		with (
+			patch.object(frappe.db, "commit", side_effect=lambda: (order.append("commit"), real_commit())[1]),
+			patch("habibi_ai.channels.telegram.send", side_effect=lambda *a, **k: order.append("send")),
+		):
+			self._run(run_turn=turn)
+		between = order[order.index("turn") + 1 : order.index("send")]
+		self.assertIn("commit", between)
+
 	def test_отвечает_на_всё_накопленное_одним_сообщением(self):
 		with patch("frappe.enqueue"):
 			incoming(self.chat, 10, "Здравствуйте")
