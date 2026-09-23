@@ -143,7 +143,7 @@ def _on_message_insert(doc):
 		return
 
 	pair = frappe.db.get_value(PAIR, decisions.pair_name(*channel, doc.chat), ["ai_paused"], as_dict=True)
-	is_bot, in_dialogue = _sender_flags(doc.from_user)
+	is_bot, in_dialogue = _sender_flags(doc.from_user, channel)
 	if decisions.should_reply(message, settings, pair, is_bot, now, sender_in_dialogue=in_dialogue):
 		enqueue_reply(channel, doc.chat)
 
@@ -168,18 +168,23 @@ def _ai_is_sending(channel, chat):
 	)
 
 
-def _sender_flags(telegram_user):
+def _sender_flags(telegram_user, channel):
 	"""(бот ли отправитель, идёт ли у него диалог с обработчиком бота).
 
 	Непустой conversation_state — habibi_telegram ведёт с человеком диалог
 	(авторизация): его сообщения — ответы обработчику, а не вопросы ИИ.
+
+	Только для канала-бота: диалог ведёт обработчик бота, а живой аккаунт его
+	не видит. Telegram User общий для бота и аккаунта, и клиент, когда-то
+	начавший вход в боте, иначе навсегда остался бы без ответа в аккаунте.
 	"""
 	if not telegram_user:
 		return False, False
 	row = frappe.db.get_value("Telegram User", telegram_user, ["is_bot", "conversation_state"], as_dict=True)
 	if not row:
 		return False, False
-	return bool(row.is_bot), (row.conversation_state or "").strip() not in ("", "{}")
+	in_dialogue = channel[0] == "Telegram Bot" and (row.conversation_state or "").strip() not in ("", "{}")
+	return bool(row.is_bot), in_dialogue
 
 
 def enqueue_reply(channel, chat):
@@ -253,7 +258,7 @@ def pending_messages(channel, chat, last_processed=None, settings=None):
 	now = now_datetime()
 	pending = []
 	for row in reversed(rows):
-		is_bot, in_dialogue = _sender_flags(row.from_user)
+		is_bot, in_dialogue = _sender_flags(row.from_user, channel)
 		message = {"direction": row.direction, "content": row.content, "sent_on": row.sent_on}
 		if decisions.is_replyable(message, is_bot, now, sender_in_dialogue=in_dialogue):
 			pending.append(row)

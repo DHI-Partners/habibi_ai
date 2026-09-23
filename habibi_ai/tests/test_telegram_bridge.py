@@ -430,6 +430,46 @@ class TestЗадача(_Base):
 		turn.assert_not_called()
 
 
+class TestАккаунтИДиалогБота(IntegrationTestCase):
+	"""Диалог авторизации ведёт обработчик бота. Живой аккаунт его не видит, и
+	клиент, начавший когда-то вход в боте, не должен остаться без ответа ИИ
+	в аккаунте."""
+
+	def setUp(self):
+		setup.install_telegram_fields()
+		title = "ai-bridge-test-account-dialog"
+		self.account = frappe.db.get_value("Telegram Account", {"title": title})
+		if not self.account:
+			self.account = frappe.get_doc({
+				"doctype": "Telegram Account", "title": title, "phone": "+70000000002",
+				"api_id": "1", "api_hash": "x",
+			}).insert().name
+		frappe.db.set_value("Telegram Account", self.account, {"ai_enabled": 1, "ai_bot": "3"})
+		self.chat = make_chat("5559300")
+		self.channel = ("Telegram Account", self.account)
+		frappe.db.delete(bridge.PAIR, {"telegram_chat": self.chat})
+		frappe.db.delete("Telegram Message", {"chat": self.chat})
+
+	def _incoming(self, message_id, text, from_user):
+		return frappe.get_doc({
+			"doctype": "Telegram Message", "chat": self.chat, "message_id": str(message_id),
+			"direction": "Incoming", "content": text, "telegram_account": self.account,
+			"sent_on": now_datetime(), "from_user": from_user,
+		}).insert(ignore_permissions=True)
+
+	def test_незавершённый_вход_в_боте_не_глушит_аккаунт(self):
+		user = make_user("5559300", '{"_auth_flow": "login"}')
+		with patch("frappe.enqueue") as enqueue:
+			self._incoming(21, "Салам алейкум", user)
+		enqueue.assert_called_once()
+
+	def test_незавершённый_вход_в_боте_не_выкидывает_из_очереди_аккаунта(self):
+		user = make_user("5559300", '{"_auth_flow": "login"}')
+		with patch("frappe.enqueue"):
+			self._incoming(22, "Как дела?", user)
+		self.assertEqual(len(bridge.pending_messages(self.channel, self.chat)), 1)
+
+
 class TestОтправкаАккаунтом(IntegrationTestCase):
 	def setUp(self):
 		title = "ai-bridge-test-account"
