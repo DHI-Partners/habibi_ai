@@ -1,0 +1,24 @@
+{
+ "actions": [],
+ "creation": "2026-09-23 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["title", "hint", "text"],
+ "fields": [
+  {"fieldname": "title", "fieldtype": "Data", "in_list_view": 1, "label": "Заголовок", "reqd": 1},
+  {"fieldname": "hint", "fieldtype": "Small Text", "label": "Подсказка", "read_only": 1},
+  {"fieldname": "text", "fieldtype": "Text", "in_list_view": 1, "label": "Текст"}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-23 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "Business Profile Rule",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

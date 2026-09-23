@@ -11,6 +11,7 @@ from datetime import datetime
 from unittest.mock import Mock, patch
 
 import frappe
+from frappe.tests import IntegrationTestCase
 
 from habibi_ai import api
 
@@ -321,6 +322,37 @@ class TestЦиклИнструментов(unittest.TestCase):
 		sent = client.step.call_args.kwargs["tools"]
 		self.assertTrue(all("run" not in d for d in sent))
 		self.assertEqual({d["name"] for d in sent}, set(api._tool_names()))
+
+
+class TestПрофильИВозможности(IntegrationTestCase):
+	"""Пишет в реальные Singles (Business Profile, Habibi AI Settings) — в
+	отличие от соседних классов файла. IntegrationTestCase откатывает базу по
+	завершении класса, поэтому dev.localhost не пачкается тестовыми данными.
+	"""
+
+	def _client_answering(self, text):
+		client = Mock()
+		client.get_max_loop = Mock(return_value=None)
+		client.step = Mock(return_value={"type": "text", "content": text})
+		return client
+
+	def test_профиль_уходит_в_движок(self):
+		profile = frappe.get_single("Business Profile")
+		profile.business_name = "Habibi Burger"
+		profile.save()
+		client = self._client_answering("ok")
+		api.run_turn(client, 5, "привет")
+		self.assertIn("Название: Habibi Burger", client.step.call_args.kwargs["tenant_context"])
+
+	def test_выключенная_доставка_не_предлагается(self):
+		settings = frappe.get_single("Habibi AI Settings")
+		settings.feature_delivery = 0
+		settings.save()
+		client = self._client_answering("ok")
+		api.run_turn(client, 5, "привет")
+		offered = [t["name"] for t in client.step.call_args.kwargs["tools"]]
+		self.assertNotIn("get_delivery_zones", offered)
+		self.assertIn("quote_order", offered)
 
 
 class TestЧужойЧат(unittest.TestCase):

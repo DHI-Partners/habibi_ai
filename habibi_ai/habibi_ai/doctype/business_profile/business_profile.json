@@ -1,0 +1,35 @@
+{
+ "actions": [],
+ "creation": "2026-09-23 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "business_name", "business_kind", "address", "phone", "description", "tone", "rules_section", "rules"
+ ],
+ "fields": [
+  {"fieldname": "business_name", "fieldtype": "Data", "label": "Название"},
+  {"fieldname": "business_kind", "fieldtype": "Data", "label": "Вид деятельности"},
+  {"fieldname": "address", "fieldtype": "Data", "label": "Адрес"},
+  {"fieldname": "phone", "fieldtype": "Data", "label": "Телефон"},
+  {"fieldname": "description", "fieldtype": "Small Text", "label": "Описание"},
+  {"default": "friendly", "fieldname": "tone", "fieldtype": "Select", "label": "Тон общения",
+   "options": "friendly\nneutral\nformal"},
+  {"fieldname": "rules_section", "fieldtype": "Section Break", "label": "Правила"},
+  {"fieldname": "rules", "fieldtype": "Table", "label": "Правила", "options": "Business Profile Rule"}
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-23 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Habibi AI",
+ "name": "Business Profile",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "read": 1, "role": "System Manager", "write": 1},
+  {"create": 1, "read": 1, "role": "Habibi Owner", "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

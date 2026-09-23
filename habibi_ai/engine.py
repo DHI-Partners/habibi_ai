@@ -340,7 +340,7 @@ class EngineClient:
 			raise BotNotFound(bot_id)
 		return bots[0].get("max_loop")
 
-	def step(self, chat_id, message, bot_id=None, turn=None, tools=None, debug=False):
+	def step(self, chat_id, message, bot_id=None, turn=None, tools=None, debug=False, tenant_context=None):
 		"""Один шаг обработки: движок отвечает текстом либо просит вызвать инструмент.
 
 		get_chat вызывается ДО обращения к движку намеренно: сам endpoint о
@@ -364,5 +364,9 @@ class EngineClient:
 			payload["bot_id"] = bot_id
 		if debug:
 			payload["debug"] = True
+		# Данные компании из кабинета. Старый движок поле игнорирует — поэтому
+		# выкатка habibi_ai и движка не обязана быть одновременной.
+		if tenant_context:
+			payload["tenant_context"] = tenant_context
 
 		return self._post("ai-process-message", payload)

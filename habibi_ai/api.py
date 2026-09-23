@@ -9,7 +9,8 @@ import uuid
 
 import frappe
 
-from habibi_ai import loop, tools
+from habibi_ai import features, loop, tools
+from habibi_ai import profile as business_profile
 from habibi_ai.tools.orders import mark_answered
 from habibi_ai.engine import BotNotFound, ChatNotFound, EngineClient, EngineError
 
@@ -145,6 +146,33 @@ def send_message(chat_id, message, bot_id=None):
 	return response
 
 
+def feature_values():
+	"""Значения флагов возможностей из Habibi AI Settings, как их ждёт features.enabled.
+
+	get_singles_dict, а не get_single_value: у get_single_value для Check
+	отсутствие строки в tabSingles и сохранённый 0 неотличимы — get_value
+	отдаёт 0 в обоих случаях. Здесь же важно различить «поле никогда не
+	сохраняли» (включено по умолчанию, ключ вообще не попал в словарь) от
+	«владелец сохранил 0» — ровно то, что ловит test_features про erp.
+	habibi-erp.com. frappe.db.exists("Singles", ...) для этой цели не
+	подходит: "Singles" не зарегистрирован как DocType, и get_value/exists
+	тихо возвращают None на любой filters из-за ignore=True в exists().
+	"""
+	saved = frappe.db.get_singles_dict("Habibi AI Settings", cast=True)
+	return {field: saved.get(field) for field, _tools in features.FEATURES.values()}
+
+
+def features_hook():
+	"""Хук habibi_cabinet_features: какие возможности включены на сайте."""
+	return features.enabled(feature_values())
+
+
+def tenant_context():
+	"""Бизнес-профиль владельца, отрендеренный для system prompt движка."""
+	doc = frappe.get_single("Business Profile")
+	return business_profile.render(doc.as_dict(), [r.as_dict() for r in doc.rules])
+
+
 def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=None, message_at=None):
 	"""Один ход агента — общий для браузера и каналов.
 
@@ -161,9 +189,13 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 	клиента, на которое отвечает ход: по нему create_order узнаёт, что клиент
 	ответил уже после расчёта. Канал передаёт время своего последнего
 	входящего; консоль его не передаёт — там сообщение пришло сейчас.
+
+	context_text — текст профиля до loop.run: он общий для всех витков хода,
+	и одно обращение к Business Profile надёжнее, чем по разу на виток.
 	"""
 	max_loop = loop.resolve_max_loop(client.get_max_loop(chat_id, bot_id), MAX_LOOP)
-	offered = _tool_names()
+	offered = features.offered(_tool_names(), features_hook())
+	context_text = tenant_context()
 	context = {
 		"turn_id": uuid.uuid4().hex,
 		"engine_chat_id": chat_id,
@@ -171,7 +203,7 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 		"message_at": message_at or frappe.utils.now_datetime(),
 	}
 	result = loop.run(
-		lambda text, **kwargs: client.step(chat_id, text, bot_id, **kwargs),
+		lambda text, **kwargs: client.step(chat_id, text, bot_id, tenant_context=context_text, **kwargs),
 		message,
 		offered=offered,
 		definitions=tools.definitions(offered),
@@ -189,5 +221,6 @@ def _tool_names():
 
 	Пока весь реестр: отбор по сценариям делает движок, сверяя присланное с
 	конфигурацией. Здесь остаётся граница «что вообще существует в коде».
+	Отбор по флагам возможностей делает run_turn через features.offered.
 	"""
 	return sorted(tools.registry())
