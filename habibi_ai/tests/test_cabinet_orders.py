@@ -36,8 +36,14 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 	def setUp(self):
 		super().setUp()
 		self.so = self.make_bot_order()  # черновик SO + AI Order Quote с channel_doctype="Telegram Chat"
+		# Явно перезаписываем, а не только заводим при отсутствии: на сайте с
+		# применённым пресетом вертикали (presets.apply) шаблон уже есть — со
+		# своим текстом. Тест держит собственный простой текст, а откат
+		# транзакции после теста возвращает шаблон пресета.
 		for key, text in (("order_accepted", "Заказ {order} принят"), ("order_rejected", "Не сможем: {reason}")):
-			if not frappe.db.exists("Telegram Message Template", key):
+			if frappe.db.exists("Telegram Message Template", key):
+				frappe.db.set_value("Telegram Message Template", key, "default_template", text)
+			else:
 				frappe.get_doc({"doctype": "Telegram Message Template", "template_name": key, "default_template": text}).insert()
 
 	def tearDown(self):

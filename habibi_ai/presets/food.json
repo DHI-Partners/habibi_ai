@@ -1,0 +1,41 @@
+{
+  "features": {"feature_delivery": 1, "feature_orders": 1},
+  "workflow": {"accept_action": "Confirm", "reject_action": "Cancel Order"},
+  "sections": [
+    {"key": "home", "label": "Главная", "icon": "home", "kind": "custom", "screen": "home"},
+    {"key": "orders", "label": "Заказы", "icon": "receipt", "kind": "generic", "ref_doctype": "Sales Order",
+     "list_fields": "name:Номер\ncustomer_name:Клиент\ngrand_total:Сумма\ncustom_fulfilment_type:Получение\ntransaction_date:Дата\nworkflow_state:Статус\ndocstatus:Проведён",
+     "form_fields": "name:Номер\ncustomer_name:Клиент\ncustom_whatsapp_number:Телефон\ncustom_fulfilment_type:Получение\ncustom_delivery_zone:Зона\ncustom_kitchen_notes:Комментарий\ngrand_total:Сумма",
+     "base_filters": "{\"custom_agent_handled\": 1}", "feature": "orders"},
+    {"key": "chats", "label": "Переписки", "icon": "message-circle", "kind": "custom", "screen": "chats"},
+    {"key": "customers", "label": "Клиенты", "icon": "users", "kind": "generic", "ref_doctype": "Customer",
+     "list_fields": "customer_name:Имя\nmobile_no:Телефон", "form_fields": "customer_name:Имя\nmobile_no:Телефон"},
+    {"key": "menu", "label": "Меню", "icon": "utensils", "kind": "generic", "ref_doctype": "Item",
+     "list_fields": "item_name:Название\nitem_group:Группа\n@selling_price:Цена\ndisabled:Снято с продажи",
+     "form_fields": "item_name:Название\nitem_group:Группа\n@selling_price:Цена\ndescription:Описание\nimage:Фото\ndisabled:Снято с продажи",
+     "base_filters": "{\"is_sales_item\": 1}", "can_create": 1, "can_edit": 1, "roles": "Habibi Owner"},
+    {"key": "zones", "label": "Зоны доставки", "icon": "map", "kind": "generic", "ref_doctype": "Delivery Zone",
+     "list_fields": "name:Зона\ndelivery_fee:Стоимость", "form_fields": "delivery_fee:Стоимость\nfree_above:Бесплатно от",
+     "can_edit": 1, "roles": "Habibi Owner", "feature": "delivery"},
+    {"key": "hours", "label": "Режим работы", "icon": "clock", "kind": "custom", "screen": "hours", "roles": "Habibi Owner"},
+    {"key": "profile", "label": "О компании", "icon": "building", "kind": "custom", "screen": "profile", "roles": "Habibi Owner"},
+    {"key": "telegram", "label": "Telegram", "icon": "send", "kind": "custom", "screen": "telegram", "roles": "Habibi Owner"}
+  ],
+  "rules": [
+    {"title": "Доставка", "hint": "Сколько идёт доставка? Сколько стоит? Куда не возите?"},
+    {"title": "Самовывоз", "hint": "Откуда забирать, сколько ждать?"},
+    {"title": "Оплата", "hint": "Какие способы оплаты принимаете?"}
+  ],
+  "templates": {
+    "order_accepted": "Заказ {order} принят! Сумма {total}. Спасибо, {customer}!",
+    "order_rejected": "К сожалению, не сможем выполнить заказ {order}: {reason}"
+  },
+  "permissions": {
+    "Habibi Owner": {"Sales Order": ["read", "write", "submit", "cancel", "delete"], "Customer": ["read"], "Item": ["read", "write", "create"],
+      "Item Price": ["read", "write", "create"], "Item Group": ["read"], "Delivery Zone": ["read", "write"], "Working Hours": ["read", "write", "create"],
+      "Telegram Chat": ["read"], "Telegram Message": ["read"], "Telegram Bot": ["read", "write", "create"], "AI Channel Chat": ["read", "write"], "AI Order Quote": ["read"],
+      "Business Profile": ["read", "write"], "Habibi AI Settings": ["read"], "Price List": ["read"], "Company": ["read"]},
+    "Habibi Staff": {"Sales Order": ["read", "write", "submit", "cancel"], "Customer": ["read"], "Item": ["read"], "Telegram Chat": ["read"],
+      "Telegram Message": ["read"], "AI Channel Chat": ["read", "write"], "AI Order Quote": ["read"], "Habibi AI Settings": ["read"], "Company": ["read"]}
+  }
+}
