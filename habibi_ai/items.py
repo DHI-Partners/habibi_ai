@@ -14,10 +14,14 @@ before_insert), и работает не только для кабинета.
 
 import frappe
 
-from habibi_ai.transliterate import slug
+from habibi_ai.transliterate import slug, unique_code
 
 MAX_CODE_LEN = 40
 FALLBACK_UOM = "Nos"
+# Название без транслитерируемых символов (эмодзи, одна пунктуация) даёт
+# пустой slug() — код всё равно должен родиться, а не оставить insert() падать
+# на «Item Code is required»
+FALLBACK_CODE = "ITEM"
 
 
 def _default_item_group():
@@ -33,26 +37,26 @@ def _default_stock_uom():
 
 
 def _unique_code(base):
-	"""base занят — суффикс -2, -3… пока не найдётся свободный код."""
-	if not frappe.db.exists("Item", {"item_code": base}):
-		return base
-	n = 2
-	while True:
-		suffix = f"-{n}"
-		candidate = base[: MAX_CODE_LEN - len(suffix)] + suffix
-		if not frappe.db.exists("Item", {"item_code": candidate}):
-			return candidate
-		n += 1
+	"""Обёртка transliterate.unique_code настоящей проверкой в базе.
+
+	Между exists() и вставкой — окно для гонки: два владельца одновременно
+	создают позицию с одним названием. Для маленького бизнеса это редкость,
+	а не то, что нужно ловить отдельно: совпавший code просто всплывёт как
+	обычная ошибка БД (Duplicate entry) на самом insert().
+	"""
+	return unique_code(base, lambda code: frappe.db.exists("Item", {"item_code": code}), MAX_CODE_LEN)
 
 
 def before_insert(doc, method=None):
 	if not doc.item_code and doc.item_name and frappe.db.get_default("item_naming_by") != "Naming Series":
-		base = slug(doc.item_name, MAX_CODE_LEN)
-		if base:
-			doc.item_code = _unique_code(base)
+		doc.item_code = _unique_code(slug(doc.item_name, MAX_CODE_LEN) or FALLBACK_CODE)
 	if not doc.item_group:
 		doc.item_group = _default_item_group()
 	if not doc.stock_uom:
 		doc.stock_uom = _default_stock_uom()
+	# ERPNext и так проставляет сюда дефолт 1 через Document._set_defaults()
+	# (он отрабатывает раньше before_insert) — строка ниже просто не даёт
+	# разделу «Меню» (base_filters is_sales_item=1) зависеть от этого чужого
+	# поведения; явный 0 она не трогает.
 	if doc.is_sales_item is None:
 		doc.is_sales_item = 1

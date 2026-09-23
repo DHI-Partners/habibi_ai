@@ -55,6 +55,13 @@ class TestCabinetMenuItemCode(IntegrationTestCase):
 		self.assertNotEqual(first["name"], second["name"])
 		self.assertEqual(second["name"], first["name"] + "-2")
 
+	def test_название_без_букв_получает_запасной_код(self):
+		"""Эмодзи и одна пунктуация не транслитерируются — slug() отдаёт "".
+		insert() всё равно должен пройти, а не упасть на «Item Code is
+		required» из-за пустого item_code."""
+		result = cabinet_api.save("menu", {"item_name": "🍔🍟", "selling_price": 500})
+		self.assertEqual(result["name"], "ITEM")
+
 	def test_явно_заданный_код_не_переписывается(self):
 		"""Хук — только для пустого item_code: Desk и прочие места, где код
 		вводят руками, свою вставку не должны почувствовать."""

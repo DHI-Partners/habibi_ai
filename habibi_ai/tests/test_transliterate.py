@@ -1,6 +1,6 @@
 import unittest
 
-from habibi_ai.transliterate import slug
+from habibi_ai.transliterate import slug, unique_code
 
 
 class TestSlug(unittest.TestCase):
@@ -30,6 +30,32 @@ class TestSlug(unittest.TestCase):
 
 	def test_none_не_роняет(self):
 		self.assertEqual(slug(None), "")
+
+	def test_казахские_буквы_транслитерируются(self):
+		self.assertEqual(slug("Қазақ бургер"), "KAZAK-BURGER")
+		self.assertEqual(slug("Құрт"), "KURT")
+
+
+class TestUniqueCode(unittest.TestCase):
+	def test_свободный_код_возвращается_как_есть(self):
+		self.assertEqual(unique_code("BURGER", exists=lambda c: False), "BURGER")
+
+	def test_занятый_код_получает_суффикс(self):
+		taken = {"BURGER"}
+		self.assertEqual(unique_code("BURGER", exists=lambda c: c in taken), "BURGER-2")
+
+	def test_несколько_суффиксов_подряд_заняты(self):
+		taken = {"BURGER", "BURGER-2", "BURGER-3"}
+		self.assertEqual(unique_code("BURGER", exists=lambda c: c in taken), "BURGER-4")
+
+	def test_суффикс_не_оставляет_двойного_дефиса_на_границе_обрезки(self):
+		# base — ровно там, где обрезка под max_len=10 с суффиксом "-2"
+		# (10 - len("-2") = 8) отрежет по самому дефису: "AAAAAAA-BBBB"[:8]
+		# == "AAAAAAA-" — без rstrip("-") получилось бы "AAAAAAA--2"
+		base = "AAAAAAA-BBBB"
+		result = unique_code(base, exists=lambda c: c == base, max_len=10)
+		self.assertEqual(result, "AAAAAAA-2")
+		self.assertNotIn("--", result)
 
 
 if __name__ == "__main__":
