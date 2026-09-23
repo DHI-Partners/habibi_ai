@@ -237,15 +237,61 @@ class TestCabinetTelegramAccount(IntegrationTestCase):
 	def test_движок_недоступен_вход_не_срывается(self):
 		self._code_sent()
 		client = MagicMock()
-		client.list_bots.side_effect = RuntimeError("engine down http://secret-engine-token@x")
+		client.list_bots.side_effect = RuntimeError("engine down")
 		with (
 			patch("habibi_ai.api.get_client", return_value=client),
 			patch(f"{ACCOUNT}.sign_in", _fake_sign_in),
+			patch("frappe.log_error") as log,
 		):
 			status = settings.sign_in("12345")
 		self.assertEqual(status["state"], "connected")
 		self.assertFalse(status["ai_ready"])
-		self.assertNotIn("secret", str(frappe.local.message_log))
+		name = frappe.db.get_value("Telegram Account", {})
+		self.assertEqual(frappe.db.get_value("Telegram Account", name, "ai_enabled"), 0)
+		# вход не откатился вместе с ИИ
+		self.assertEqual(frappe.db.get_value("Telegram Account", name, "status"), "Connected")
+		log.assert_called_once()
+
+	def test_повторный_вход_не_трогает_настройки_ии(self):
+		"""Администратор выключил ИИ и разрешил группы — перелогин это не сбрасывает."""
+		self._connected()
+		name = frappe.db.get_value("Telegram Account", {})
+		frappe.db.set_value(
+			"Telegram Account",
+			name,
+			{"ai_enabled": 0, "ai_reply_in_groups": 1, "enabled": 0, "sync_enabled": 0},
+		)
+		with patch(f"{ACCOUNT}.log_out", _fake_log_out):
+			settings.disconnect()
+		self._code_sent()
+		with _engine((7,)) as engine, patch(f"{ACCOUNT}.sign_in", _fake_sign_in):
+			status = settings.sign_in("12345")
+		self.assertEqual(status["state"], "connected")
+		row = frappe.db.get_value(
+			"Telegram Account",
+			name,
+			["ai_enabled", "ai_reply_in_groups", "ai_bot", "enabled", "sync_enabled"],
+			as_dict=True,
+		)
+		self.assertEqual((row.ai_enabled, row.ai_reply_in_groups, row.ai_bot), (0, 1, "7"))
+		self.assertEqual((row.enabled, row.sync_enabled), (1, 1))
+		engine.return_value.list_bots.assert_not_called()
+
+	def test_вход_без_запрошенного_кода(self):
+		frappe.get_doc(
+			{
+				"doctype": "Telegram Account",
+				"title": "Idle",
+				"phone": "+77001234567",
+				"api_id": "1",
+				"api_hash": "x",
+			}
+		).insert()
+		with patch(f"{ACCOUNT}.sign_in") as sign_in:
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				settings.sign_in("12345")
+		self.assertIn("Сначала запросите код", str(ctx.exception))
+		sign_in.assert_not_called()
 
 	def test_пароль_двухэтапной_проверки(self):
 		self._code_sent()

@@ -316,23 +316,33 @@ def sign_in(code=None, password=None):
 	if not code and not password:
 		frappe.throw(_("Введите код из Telegram"))
 	doc = _get_account("write")
+	if doc.status not in ("Code Sent", "Password Required"):
+		# Без phone_code_hash Telegram всё равно откажет — не тратим попытку
+		frappe.throw(_("Сначала запросите код"))
+	# account_id остаётся после log_out: по нему отличаем первый вход от
+	# повторного, до того как sign_in перепишет личность аккаунта
+	first = not doc.account_id or not doc.get("ai_bot")
 	result = _call_telegram(
 		f"Не удалось войти в Telegram ({doc.name})",
 		lambda: doc.sign_in(code=code or None, password=password or None),
 	)
 	if not (result or {}).get("password_required"):
-		_enable_ai(doc.name)
+		_after_sign_in(doc.name, configure_ai=first)
 	return telegram_status()
 
 
-def _enable_ai(name):
-	"""После входа — ИИ отвечает в личных переписках аккаунта.
+def _after_sign_in(name, configure_ai):
+	"""После входа — приём сообщений всегда, ИИ — только при первом подключении.
 
-	Заданного бота не трогаем. Не задан — ставим, только если у тенанта он
-	ровно один: выбирать за владельца из нескольких нельзя. Движок недоступен
-	или бот не прошёл validate_channel — вход всё равно состоялся: сессию уже
-	выдал Telegram, и откатывать её из-за ИИ нельзя. ИИ тогда остаётся
-	выключенным, экран покажет ai_ready: false.
+	Повторный вход (аккаунт уже был подключён и бот выбран) не трогает
+	ai_enabled и ai_reply_in_groups: их мог поменять администратор, и
+	перелогин не должен молча включать ИИ обратно.
+
+	При первом подключении заданного бота не трогаем. Не задан — ставим, только
+	если у тенанта он ровно один: выбирать за владельца из нескольких нельзя.
+	Движок недоступен или бот не прошёл validate_channel — вход всё равно
+	состоялся: сессию уже выдал Telegram, и откатывать её из-за ИИ нельзя. ИИ
+	тогда остаётся выключенным, экран покажет ai_ready: false.
 	"""
 	log = frappe.local.message_log
 	mark = len(log)
@@ -341,8 +351,11 @@ def _enable_ai(name):
 		doc = frappe.get_doc(ACCOUNT, name)
 		doc.enabled = 1
 		doc.sync_enabled = 1
-		doc.ai_reply_in_groups = 0
+		if configure_ai:
+			doc.ai_reply_in_groups = 0
 		doc.save()
+		if not configure_ai:
+			return
 		if not doc.get("ai_bot"):
 			from habibi_ai import api
 
