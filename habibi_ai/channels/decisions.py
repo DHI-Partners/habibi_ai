@@ -161,6 +161,11 @@ def history_from_pause(messages):
 		if not text:
 			continue
 		if message.get("direction") == "Incoming":
+			# Чего бот не видит при ответе (is_replyable), того нет и в его
+			# истории: команды — обработчику бота, боты и ответы на вопросы
+			# входа — не к ИИ
+			if text.startswith("/") or message.get("sender_is_bot") or message.get("sender_in_dialogue"):
+				continue
 			role = "user"
 		elif message.get("is_automated"):
 			continue
@@ -172,6 +177,24 @@ def history_from_pause(messages):
 		else:
 			history.append((role, STAFF_MARK + text if role == "assistant" else text))
 	return history
+
+
+def split_pause_window(rows):
+	"""Сообщения после паузы → (переписка сотрудника, хвост после неё).
+
+	Окно — до последнего ручного ответа включительно: на это сотрудник уже
+	ответил, оно уходит в историю бота и считается отвеченным. Хвост —
+	то, что клиент написал после, — остаётся боту: иначе вопрос, заданный
+	после последнего ответа сотрудника, не получил бы ответа вовсе. Без
+	ручного ответа всё — хвост. rows — по возрастанию времени.
+	"""
+	last = None
+	for i, row in enumerate(rows):
+		if row.get("direction") == "Outgoing" and not row.get("is_automated"):
+			last = i
+	if last is None:
+		return [], list(rows)
+	return list(rows[: last + 1]), list(rows[last + 1 :])
 
 
 def is_write_forbidden(error_text):

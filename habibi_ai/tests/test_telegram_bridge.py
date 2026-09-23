@@ -487,8 +487,11 @@ def said(chat, message_id, direction, text, automated=0):
 
 
 class TestИсторияПаузы(_Base):
-	"""Сотрудник ответил за бота — бот, вернувшись, должен об этом знать и не
-	отвечать второй раз на уже закрытые вопросы."""
+	"""Сотрудник ответил за бота — бот, вернувшись, должен об этом знать, не
+	отвечать второй раз на закрытые вопросы и ответить на незакрытые."""
+
+	JOB = "habibi_ai.channels.telegram.push_pause_history"
+	REPLY = "habibi_ai.channels.telegram.reply_job"
 
 	def setUp(self):
 		super().setUp()
@@ -498,10 +501,27 @@ class TestИсторияПаузы(_Base):
 		patcher = patch("habibi_ai.api.get_client", return_value=self.client)
 		patcher.start()
 		self.addCleanup(patcher.stop)
-		for target in ("habibi_ai.cabinet.realtime._recipients", "frappe.enqueue"):
-			p = patch(target, return_value=[])
-			p.start()
-			self.addCleanup(p.stop)
+		p = patch("habibi_ai.cabinet.realtime._recipients", return_value=[])
+		p.start()
+		self.addCleanup(p.stop)
+		p = patch("frappe.enqueue")
+		self.enqueue = p.start()
+		self.addCleanup(p.stop)
+
+	def _calls(self, method):
+		return [c.kwargs for c in self.enqueue.call_args_list if c.args and c.args[0] == method]
+
+	def _run_job(self):
+		(job,) = self._calls(self.JOB)
+		self.assertEqual(job["queue"], "long")
+		self.assertTrue(job["enqueue_after_commit"])
+		self.enqueue.reset_mock()
+		kwargs = {k: job[k] for k in ("channel_doctype", "channel_name", "chat", "messages", "reply")}
+		bridge.push_pause_history(**kwargs)
+		return job
+
+	def _mark(self):
+		return frappe.db.get_value(bridge.PAIR, self.pair, "last_processed_message")
 
 	def _pause_and_talk(self):
 		answered = incoming(self.chat, 60, "привет")
@@ -512,39 +532,102 @@ class TestИсторияПаузы(_Base):
 		said(self.chat, 62, "Incoming", "где заказ?")
 		return said(self.chat, 63, "Outgoing", "везём, 10 минут")
 
-	def test_resume_из_кабинета_дописывает_историю_и_двигает_отметку(self):
+	def test_resume_не_ждёт_движок_история_уходит_задачей(self):
 		from habibi_ai.cabinet import chats
 
 		last = self._pause_and_talk()
 		chats.resume(self.chat)
+		# В запросе движок не трогается — подвисший движок не держит снятие паузы
+		self.client.add_messages.assert_not_called()
+		self.assertFalse(frappe.db.get_value(bridge.PAIR, self.pair, "ai_paused"))
+		self.assertEqual(self._mark(), last.name)
 
+		job = self._run_job()
+		self.assertFalse(job["reply"])
 		self.client.add_messages.assert_called_once_with(
 			42, [("user", "где заказ?"), ("assistant", "[Ответил сотрудник] везём, 10 минут")]
 		)
-		pair = frappe.db.get_value(bridge.PAIR, self.pair, ["ai_paused", "last_processed_message"], as_dict=True)
-		self.assertFalse(pair.ai_paused)
-		self.assertEqual(pair.last_processed_message, last.name)
+		self.assertEqual(self._calls(self.REPLY), [])
 
 		# Вопрос, закрытый сотрудником, бот больше не видит — только новый
-		with patch("frappe.enqueue") as enqueue:
-			fresh = incoming(self.chat, 64, "а можно ещё соус?")
-		enqueue.assert_called_once()
+		fresh = incoming(self.chat, 64, "а можно ещё соус?")
+		self.assertEqual(len(self._calls(self.REPLY)), 1)
 		pending = bridge.pending_messages(self.channel, self.chat, last.name)
 		self.assertEqual([row.name for row in pending], [fresh.name])
 
-	def test_сбой_движка_не_мешает_снять_паузу(self):
+	def test_вопрос_после_ответа_сотрудника_остаётся_боту(self):
+		from habibi_ai.cabinet import chats
+
+		staff = self._pause_and_talk()
+		tail = said(self.chat, 65, "Incoming", "а соус есть?")
+		chats.resume(self.chat)
+		self.assertEqual(self._mark(), staff.name)
+
+		job = self._run_job()
+		self.assertTrue(job["reply"])
+		self.client.add_messages.assert_called_once_with(
+			42, [("user", "где заказ?"), ("assistant", "[Ответил сотрудник] везём, 10 минут")]
+		)
+		# Ответ ставится после записи истории — той же задачей
+		self.assertEqual(len(self._calls(self.REPLY)), 1)
+		pending = bridge.pending_messages(self.channel, self.chat, staff.name)
+		self.assertEqual([row.name for row in pending], [tail.name])
+
+	def test_без_ответа_сотрудника_отметка_на_месте_бот_отвечает(self):
+		from habibi_ai.cabinet import chats
+
+		answered = incoming(self.chat, 66, "привет")
+		bridge.get_or_create_pair(self.channel, self.chat)
+		frappe.db.set_value(bridge.PAIR, self.pair, "last_processed_message", answered.name)
+		frappe.db.set_value(bridge.PAIR, self.pair, "ai_paused", 1)
+		said(self.chat, 67, "Incoming", "есть кто?")
+		chats.resume(self.chat)
+		self.assertEqual(self._mark(), answered.name)
+		job = self._run_job()
+		self.assertEqual(job["messages"], [])
+		self.client.add_messages.assert_not_called()
+		self.assertEqual(len(self._calls(self.REPLY)), 1)
+
+	def test_resume_живого_чата_ничего_не_трогает(self):
+		from habibi_ai.cabinet import chats
+
+		answered = incoming(self.chat, 68, "привет")
+		bridge.get_or_create_pair(self.channel, self.chat)
+		frappe.db.set_value(bridge.PAIR, self.pair, "last_processed_message", answered.name)
+		said(self.chat, 69, "Outgoing", "ответ сотрудника")
+		said(self.chat, 70, "Incoming", "вопрос, на который бот вот-вот ответит")
+		frappe.db.set_value(bridge.PAIR, self.pair, "ai_paused", 0)
+		self.enqueue.reset_mock()
+		chats.resume(self.chat)
+		self.assertEqual(self._mark(), answered.name)
+		self.assertEqual(self._calls(self.JOB), [])
+
+	def test_двойной_resume_дописывает_один_раз(self):
+		from habibi_ai.cabinet import chats
+
+		self._pause_and_talk()
+		chats.resume(self.chat)
+		chats.resume(self.chat)
+		self.assertEqual(len(self._calls(self.JOB)), 1)
+
+	def test_сбой_движка_только_в_лог(self):
 		from habibi_ai.cabinet import chats
 		from habibi_ai.engine import EngineError
 
-		last = self._pause_and_talk()
+		self._pause_and_talk()
+		said(self.chat, 71, "Incoming", "а соус есть?")
+		chats.resume(self.chat)
 		self.client.add_messages = Mock(side_effect=EngineError("движок лежит"))
 		with patch("frappe.log_error") as log_error:
-			chats.resume(self.chat)
+			self._run_job()
 		log_error.assert_called_once()
-		pair = frappe.db.get_value(bridge.PAIR, self.pair, ["ai_paused", "last_processed_message"], as_dict=True)
-		self.assertFalse(pair.ai_paused)
-		# Лучше бот без контекста, чем второй ответ клиенту
-		self.assertEqual(pair.last_processed_message, last.name)
+		# Ответ на хвост всё равно ставится
+		self.assertEqual(len(self._calls(self.REPLY)), 1)
+
+	def test_дедлок_в_задаче_не_глотается(self):
+		with patch("habibi_ai.channels.telegram._push_history", side_effect=frappe.QueryDeadlockError("1213")):
+			with self.assertRaises(frappe.QueryDeadlockError):
+				bridge.push_pause_history("Telegram Bot", BOT, self.chat, ["x"], reply=False)
 
 	def test_без_чата_движка_он_заводится(self):
 		from habibi_ai.cabinet import chats
@@ -552,75 +635,117 @@ class TestИсторияПаузы(_Base):
 		self._pause_and_talk()
 		frappe.db.set_value(bridge.PAIR, self.pair, "engine_chat_id", 0)
 		chats.resume(self.chat)
-		self.client.create_chat.assert_called_once_with(
-			3, decisions.external_user("Telegram Bot", BOT, CHAT_ID)
-		)
+		self._run_job()
+		self.client.create_chat.assert_called_once_with(3, decisions.external_user("Telegram Bot", BOT, CHAT_ID))
 		self.assertEqual(self.client.add_messages.call_args.args[0], 77)
-		self.assertEqual(str(frappe.db.get_value(bridge.PAIR, self.pair, "engine_chat_id")), "77")
+		self.assertEqual(frappe.db.get_value(bridge.PAIR, self.pair, "engine_chat_id"), 77)
 
 	def test_удалённый_чат_движка_заводится_заново(self):
 		from habibi_ai.cabinet import chats
 		from habibi_ai.engine import ChatNotFound
 
 		self._pause_and_talk()
-		self.client.add_messages = Mock(side_effect=[ChatNotFound(42), None])
 		chats.resume(self.chat)
+		self.client.add_messages = Mock(side_effect=[ChatNotFound(42), None])
+		self._run_job()
 		self.assertEqual([c.args[0] for c in self.client.add_messages.call_args_list], [42, 77])
 		self.assertEqual(frappe.db.get_value(bridge.PAIR, self.pair, "engine_chat_id"), 77)
 
-	def test_ИИ_выключен_только_отметка(self):
+	def test_ИИ_выключен_история_не_пишется(self):
 		from habibi_ai.cabinet import chats
 
 		last = self._pause_and_talk()
-		frappe.db.set_value("Telegram Bot", BOT, "ai_enabled", 0)
 		chats.resume(self.chat)
+		frappe.db.set_value("Telegram Bot", BOT, "ai_enabled", 0)
+		self._run_job()
 		self.client.add_messages.assert_not_called()
-		self.assertEqual(frappe.db.get_value(bridge.PAIR, self.pair, "last_processed_message"), last.name)
+		self.assertEqual(self._mark(), last.name)
 
-	def test_без_отметки_и_начала_паузы_только_отметка(self):
+	def test_без_отметки_и_начала_паузы_ничего(self):
 		# Непонятно, с какого места диалог шёл мимо бота, — вся история чата
 		# в движок не уходит
-		incoming(self.chat, 70, "давнее")
-		last = said(self.chat, 71, "Outgoing", "давний ответ")
+		incoming(self.chat, 72, "давнее")
+		said(self.chat, 73, "Outgoing", "давний ответ")
+		self.assertIsNone(bridge.release_pause(self.channel, self.chat, None, None))
+		self.assertEqual(self._calls(self.JOB), [])
+
+	def test_ответ_поставивший_паузу_входит_в_окно(self):
+		# Без отметки окно считается от начала паузы, а ответ сотрудника,
+		# который её поставил, записан чуть раньше paused_on
+		incoming(self.chat, 74, "до паузы")
+		self.enqueue.reset_mock()
 		bridge.get_or_create_pair(self.channel, self.chat)
-		bridge.sync_paused_history(self.channel, self.chat, paused_on=None)
-		self.client.add_messages.assert_not_called()
-		self.assertEqual(frappe.db.get_value(bridge.PAIR, self.pair, "last_processed_message"), last.name)
-
-	def test_без_отметки_берётся_начало_паузы(self):
-		incoming(self.chat, 72, "до паузы")
-		bridge.pause(self.channel, self.chat, bridge.REASON_OPERATOR)
-		paused_on = frappe.db.get_value(bridge.PAIR, self.pair, "paused_on")
 		frappe.db.set_value(bridge.PAIR, self.pair, "engine_chat_id", 42)
-		said(self.chat, 73, "Incoming", "во время паузы")
-		bridge.sync_paused_history(self.channel, self.chat, paused_on=paused_on)
-		self.client.add_messages.assert_called_once_with(42, [("user", "во время паузы")])
+		said(self.chat, 75, "Outgoing", "сейчас уточню")  # мост ставит паузу
+		paused_on = frappe.db.get_value(bridge.PAIR, self.pair, "paused_on")
+		self.assertIsNotNone(paused_on)
+		said(self.chat, 76, "Incoming", "жду")
+		last = said(self.chat, 77, "Outgoing", "будет в 18:00")
+		self.assertEqual(bridge.release_pause(self.channel, self.chat, paused_on, None), last.name)
+		self._run_job()
+		self.client.add_messages.assert_called_once_with(
+			42,
+			[
+				("assistant", "[Ответил сотрудник] сейчас уточню"),
+				("user", "жду"),
+				("assistant", "[Ответил сотрудник] будет в 18:00"),
+			],
+		)
 
-	def test_снятие_паузы_в_desk_синхронизирует(self):
-		bridge.pause(self.channel, self.chat, bridge.REASON_OPERATOR)
+	def test_окно_ограничено_SYNC_LIMIT(self):
+		self._pause_and_talk()
+		row = frappe.db.get_value(bridge.PAIR, self.pair, ["paused_on", "last_processed_message"], as_dict=True)
+		with patch("habibi_ai.channels.telegram.SYNC_LIMIT", 1):
+			bridge.release_pause(self.channel, self.chat, row.paused_on, row.last_processed_message)
+		(job,) = self._calls(self.JOB)
+		self.assertEqual(len(job["messages"]), 1)
+
+	def test_команды_боты_и_диалог_входа_не_в_истории(self):
+		from habibi_ai.cabinet import chats
+
+		self._pause_and_talk()
+		said(self.chat, 78, "Incoming", "/start")
+		authing = make_user("5559177", conversation_state='{"step": "phone"}')
+		frappe.get_doc({
+			"doctype": "Telegram Message", "chat": self.chat, "message_id": "79", "direction": "Incoming",
+			"content": "+79001234567", "telegram_bot": BOT, "sent_on": now_datetime(), "from_user": authing,
+		}).insert(ignore_permissions=True)
+		said(self.chat, 80, "Outgoing", "ок")
+		chats.resume(self.chat)
+		self._run_job()
+		history = self.client.add_messages.call_args.args[1]
+		self.assertEqual(
+			history,
+			[("user", "где заказ?"), ("assistant", "[Ответил сотрудник] везём, 10 минут\nок")],
+		)
+
+	def test_снятие_паузы_в_desk(self):
+		last = self._pause_and_talk()
 		doc = frappe.get_doc(bridge.PAIR, self.pair)
-		paused_on = doc.paused_on
 		doc.ai_paused = 0
-		with patch("habibi_ai.channels.telegram.sync_paused_history") as sync:
-			doc.save()
-		sync.assert_called_once_with(self.channel, self.chat, paused_on=paused_on)
+		doc.save()
+		self.assertEqual(self._mark(), last.name)
+		self.assertEqual(doc.last_processed_message, last.name)
+		# Отметка не меняет modified — форма после сохранения не «устарела»
+		self.assertEqual(str(frappe.db.get_value(bridge.PAIR, self.pair, "modified")), str(doc.modified))
+		self.assertEqual(len(self._calls(self.JOB)), 1)
 
-	def test_сохранение_без_смены_паузы_не_синхронизирует(self):
+	def test_сохранение_без_смены_паузы_не_снимает(self):
 		bridge.pause(self.channel, self.chat, bridge.REASON_OPERATOR)
 		doc = frappe.get_doc(bridge.PAIR, self.pair)
 		doc.paused_reason = bridge.REASON_MANUAL
-		with patch("habibi_ai.channels.telegram.sync_paused_history") as sync:
+		with patch("habibi_ai.channels.telegram.release_pause") as release:
 			doc.save()
-		sync.assert_not_called()
+		release.assert_not_called()
 
-	def test_resume_из_кабинета_синхронизирует_один_раз(self):
-		# resume пишет db.set_value — on_update не срабатывает, второго вызова нет
+	def test_resume_из_кабинета_без_хука_desk(self):
+		# resume пишет db.set_value — on_update не срабатывает, второго снятия нет
 		from habibi_ai.cabinet import chats
 
 		bridge.pause(self.channel, self.chat, bridge.REASON_OPERATOR)
-		with patch("habibi_ai.channels.telegram.sync_paused_history") as sync:
+		with patch("habibi_ai.channels.telegram.release_pause", return_value=None) as release:
 			chats.resume(self.chat)
-		sync.assert_called_once()
+		release.assert_called_once()
 
 
 class TestАккаунтИДиалогБота(IntegrationTestCase):

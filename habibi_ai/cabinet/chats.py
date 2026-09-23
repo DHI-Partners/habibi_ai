@@ -136,10 +136,24 @@ def pause(chat):
 @frappe.whitelist(methods=["POST"])
 def resume(chat):
 	p = _pair_for_write(chat)
-	frappe.db.set_value(PAIR, p.name, {"ai_paused": 0, "paused_reason": None, "paused_on": None})
+	# Под блокировкой строки пары: два resume подряд иначе оба увидели бы
+	# паузу и дописали бы переписку в историю бота дважды
+	row = frappe.db.get_value(
+		PAIR, p.name, ["ai_paused", "paused_on", "last_processed_message"], as_dict=True, for_update=True
+	)
+	if not row.ai_paused:
+		# Чат и так у бота: сдвиг отметки пометил бы отвеченным то, на что
+		# бот вот-вот ответит
+		return
+	values = {"ai_paused": 0, "paused_reason": None, "paused_on": None}
 	# Переписка сотрудника — в историю бота, её вопросы — в отвеченные.
 	# db.set_value не зовёт on_update, так что хук Desk второй раз этого не сделает
-	telegram.sync_paused_history((p.channel_doctype, p.channel_name), chat, paused_on=p.paused_on)
+	mark = telegram.release_pause(
+		(p.channel_doctype, p.channel_name), chat, row.paused_on, row.last_processed_message
+	)
+	if mark:
+		values["last_processed_message"] = mark
+	frappe.db.set_value(PAIR, p.name, values)
 	_notify_chat_changed(chat)
 
 

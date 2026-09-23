@@ -6,6 +6,7 @@ frappe — в decisions.py, здесь только клей.
 """
 
 import time
+from datetime import timedelta
 
 import frappe
 import requests
@@ -47,6 +48,9 @@ PART_LIMIT = 3500
 # далеко позади (ИИ неделями был выключен на канале), чтобы в историю бота
 # не ушёл целый архив переписки.
 SYNC_LIMIT = 100
+# Насколько раньше paused_on может быть записан ручной ответ, поставивший
+# паузу: мост ставит её сразу после записи, в той же транзакции
+PAUSE_ANCHOR = timedelta(minutes=1)
 
 
 def validate_channel(doc, method=None):
@@ -243,47 +247,113 @@ def on_pair_update(doc, method=None):
 	"""on_update у AI Channel Chat: паузу сняли галочкой в Desk.
 
 	paused_on берётся из версии до сохранения: validate пары его уже стёр.
-	Кабинет снимает паузу через db.set_value — сюда не попадает и зовёт
-	sync_paused_history сам, так что двойной синхронизации нет.
+	Отметка пишется db_set без смены modified — иначе только что сохранённая
+	форма стала бы «устаревшей». Кабинет снимает паузу через db.set_value —
+	сюда не попадает и зовёт release_pause сам, так что двойного снятия нет.
 	"""
 	before = doc.get_doc_before_save()
 	if not before or not before.ai_paused or doc.ai_paused:
 		return
-	sync_paused_history(
-		(doc.channel_doctype, doc.channel_name), doc.telegram_chat, paused_on=before.paused_on
+	mark = release_pause(
+		(doc.channel_doctype, doc.channel_name),
+		doc.telegram_chat,
+		before.paused_on,
+		before.last_processed_message,
 	)
+	if mark:
+		doc.db_set("last_processed_message", mark, update_modified=False)
 
 
-def sync_paused_history(channel, chat, paused_on=None):
-	"""Снятие паузы: переписка без бота — в историю движка, её вопросы — в отвеченные.
+def release_pause(channel, chat, paused_on, last_processed):
+	"""Снятие паузы: что сотрудник уже закрыл — боту в историю, остальное — ему в ответ.
 
-	Бот иначе не знал бы, что обещал сотрудник, и ответил бы второй раз на
-	свежие вопросы клиента, которые сотрудник уже закрыл.
+	Вызывающий держит блокировку пары и уже убедился, что пауза стояла: иначе
+	второй resume дописал бы тот же кусок дважды, а resume живого чата
+	пометил бы отвеченным то, на что бот вот-вот ответит.
 
-	Отметка сдвигается всегда, даже если движок не ответил: лучше бот без
-	контекста, чем второй ответ клиенту. Коммита здесь нет — сохранение пары
-	или запрос кабинета закоммитят снятие паузы и отметку вместе.
+	Здесь — только расчёт окна: запрос кабинета и сохранение в Desk не ждут
+	движок (подвисший движок иначе упёрся бы в таймаут gunicorn, и паузу
+	нельзя было бы снять вовсе). Сама запись — задачей push_pause_history
+	после коммита, по явным именам сообщений: она дописывает ровно это окно.
+
+	Возвращает новую отметку last_processed_message — последний ручной ответ
+	сотрудника — или None, если её двигать не нужно.
 	"""
-	pair = get_or_create_pair(channel, chat)
-	newest = frappe.get_all(
+	filters = {"chat": chat, _channel_field(channel): channel[1]}
+	since = frappe.db.get_value("Telegram Message", last_processed, "creation") if last_processed else None
+	if since:
+		filters["creation"] = (">", since)
+	elif paused_on:
+		anchor = _pause_anchor(channel, chat, paused_on)
+		filters["creation"] = (">=", anchor) if anchor else (">", paused_on)
+	else:
+		# Ни отметки, ни начала паузы — неизвестно, с какого места диалог шёл
+		# мимо бота; вся история чата в движок не уходит
+		return None
+
+	rows = frappe.get_all(
 		"Telegram Message",
-		filters={"chat": chat, _channel_field(channel): channel[1]},
+		filters=filters,
+		fields=["name", "direction", "is_automated"],
+		order_by="creation desc",
+		limit=SYNC_LIMIT,
+	)
+	window, trailing = decisions.split_pause_window(list(reversed(rows)))
+	reply = any(r.direction == "Incoming" for r in trailing)
+	if not window and not reply:
+		return None
+
+	pair = decisions.pair_name(*channel, chat)
+	frappe.enqueue(
+		"habibi_ai.channels.telegram.push_pause_history",
+		queue="long",
+		job_id=f"ai-history:{pair}:{window[-1].name if window else 'reply'}",
+		deduplicate=True,
+		enqueue_after_commit=True,
+		channel_doctype=channel[0],
+		channel_name=channel[1],
+		chat=chat,
+		messages=[r.name for r in window],
+		reply=reply,
+	)
+	return window[-1].name if window else None
+
+
+def _pause_anchor(channel, chat, paused_on):
+	"""Время ручного ответа, который и поставил паузу.
+
+	Мост ставит паузу уже после записи этого ответа, так что он чуть старше
+	paused_on и без поправки выпал бы из окна.
+	"""
+	found = frappe.get_all(
+		"Telegram Message",
+		filters={
+			"chat": chat,
+			_channel_field(channel): channel[1],
+			"direction": "Outgoing",
+			"is_automated": 0,
+			"creation": ("between", (get_datetime(paused_on) - PAUSE_ANCHOR, paused_on)),
+		},
 		order_by="creation desc",
 		limit=1,
-		pluck="name",
+		pluck="creation",
 	)
-	if not newest:
-		return
+	return found[0] if found else None
 
-	since = None
-	if pair.last_processed_message:
-		since = frappe.db.get_value("Telegram Message", pair.last_processed_message, "creation")
-	since = since or paused_on
-	# Ни отметки, ни начала паузы — неизвестно, с какого места диалог шёл
-	# мимо бота; вся история чата в движок не уходит
-	if since:
+
+def push_pause_history(channel_doctype, channel_name, chat, messages, reply=False):
+	"""Фоновая задача: окно паузы — в историю движка, затем ответ на хвост.
+
+	Ответ ставится в конце, после записи истории: бот, отвечая на вопрос,
+	заданный после ответа сотрудника, должен уже знать этот ответ. Сбой
+	движка — только в лог: паузу уже сняли, отметку сдвинули, и лучше бот
+	без контекста, чем второй ответ клиенту.
+	"""
+	frappe.set_user("Administrator")
+	channel = (channel_doctype, channel_name)
+	if messages:
 		try:
-			_push_history(pair, channel, chat, since)
+			_push_history(channel, chat, messages)
 		except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
 			raise
 		except Exception:
@@ -291,11 +361,11 @@ def sync_paused_history(channel, chat, paused_on=None):
 				title="ИИ: переписка паузы не ушла в движок",
 				message=f"Чат: {chat}\n\n{frappe.get_traceback()}",
 			)
+	if reply:
+		enqueue_reply(channel, chat)
 
-	frappe.db.set_value(PAIR, pair.name, "last_processed_message", newest[0])
 
-
-def _push_history(pair, channel, chat, since):
+def _push_history(channel, chat, names):
 	settings = channel_settings(*channel)
 	if not settings or not settings.ai_enabled or not settings.ai_bot:
 		return
@@ -306,30 +376,28 @@ def _push_history(pair, channel, chat, since):
 
 	rows = frappe.get_all(
 		"Telegram Message",
-		filters={
-			"chat": chat,
-			_channel_field(channel): channel[1],
-			"is_deleted": 0,
-			"creation": (">", since),
-		},
-		fields=["direction", "content", "is_automated"],
-		order_by="creation desc",
-		limit=SYNC_LIMIT,
+		filters={"name": ("in", names), "is_deleted": 0},
+		fields=["direction", "content", "is_automated", "from_user"],
+		order_by="creation asc",
 	)
-	history = decisions.history_from_pause(reversed(rows))
+	for row in rows:
+		if row.direction == "Incoming":
+			row.sender_is_bot, row.sender_in_dialogue = _sender_flags(row.from_user, channel)
+	history = decisions.history_from_pause(rows)
 	if not history:
 		return
 
 	from habibi_ai import api
 
 	client = api.get_client()
+	pair = get_or_create_pair(channel, chat)
 	bot_id = int(settings.ai_bot)
 	try:
-		client.add_messages(_engine_chat(client, pair, bot_id, chat, commit=False), history)
+		client.add_messages(_engine_chat(client, pair, bot_id, chat), history)
 	except ChatNotFound:
 		# Чат движка удалили в админке — как в _generate, заводим новый
 		pair.db_set("engine_chat_id", 0)
-		client.add_messages(_engine_chat(client, pair, bot_id, chat, commit=False), history)
+		client.add_messages(_engine_chat(client, pair, bot_id, chat), history)
 
 
 def pending_messages(channel, chat, last_processed=None, settings=None):
@@ -503,17 +571,15 @@ def _generate(pair, bot_id, text, chat, message_at=None):
 			time.sleep(RETRY_DELAY_SECONDS)
 
 
-def _engine_chat(client, pair, bot_id, chat, commit=True):
+def _engine_chat(client, pair, bot_id, chat):
 	if pair.engine_chat_id:
 		return pair.engine_chat_id
 	chat_id = frappe.db.get_value("Telegram Chat", chat, "chat_id")
 	created = client.create_chat(bot_id, decisions.external_user(pair.channel_doctype, pair.channel_name, chat_id))
 	pair.db_set("engine_chat_id", created["id"])
 	# Сразу: следующий раунд начинается с rollback, и без коммита чат в
-	# движке заводился бы заново на каждое сообщение. Вне reply_job (снятие
-	# паузы) коммитит вызывающий — вместе со своей записью.
-	if commit:
-		frappe.db.commit()
+	# движке заводился бы заново на каждое сообщение
+	frappe.db.commit()
 	return created["id"]
 
 

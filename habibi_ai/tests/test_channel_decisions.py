@@ -290,3 +290,46 @@ class TestИсторияПаузы(unittest.TestCase):
 
 	def test_нечего_дописывать(self):
 		self.assertEqual(decisions.history_from_pause([]), [])
+
+	def test_чего_бот_не_видит_то_не_дописывается(self):
+		# Команды разбирает обработчик бота, ботов и ответы на вопросы входа
+		# ИИ тоже не видит — в его историю они не идут
+		self.assertEqual(
+			decisions.history_from_pause(
+				[
+					said("Incoming", "/start"),
+					dict(said("Incoming", "я бот"), sender_is_bot=1),
+					dict(said("Incoming", "+79001234567"), sender_in_dialogue=1),
+					said("Incoming", "где заказ?"),
+				]
+			),
+			[("user", "где заказ?")],
+		)
+
+
+def row(name, direction, automated=0):
+	return {"name": name, "direction": direction, "is_automated": automated}
+
+
+class TestОкноПаузы(unittest.TestCase):
+	def test_окно_до_последнего_ответа_сотрудника_хвост_после(self):
+		rows = [
+			row("q1", "Incoming"),
+			row("s1", "Outgoing"),
+			row("q2", "Incoming"),
+			row("s2", "Outgoing"),
+			row("ai", "Outgoing", automated=1),
+			row("q3", "Incoming"),
+		]
+		window, trailing = decisions.split_pause_window(rows)
+		self.assertEqual([r["name"] for r in window], ["q1", "s1", "q2", "s2"])
+		self.assertEqual([r["name"] for r in trailing], ["ai", "q3"])
+
+	def test_без_ответа_сотрудника_всё_остаётся_хвостом(self):
+		rows = [row("q1", "Incoming"), row("ai", "Outgoing", automated=1)]
+		window, trailing = decisions.split_pause_window(rows)
+		self.assertEqual(window, [])
+		self.assertEqual(trailing, rows)
+
+	def test_пусто(self):
+		self.assertEqual(decisions.split_pause_window([]), ([], []))
