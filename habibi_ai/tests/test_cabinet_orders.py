@@ -6,7 +6,9 @@ import frappe
 from frappe.permissions import add_permission, update_permission_property
 from frappe.tests import IntegrationTestCase
 
+from habibi_ai import presets
 from habibi_ai.cabinet import orders
+from habibi_ai.cabinet.adapters import order_status, order_total
 
 # Хелперы готового заказа — те же, что в test_orders.py (там уже есть
 # сборка тестовой компании, прайс-листа и позиций). Импортируем, а не копируем.
@@ -198,3 +200,149 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 	def test_без_права_удалять_отклонить_не_предлагается(self):
 		frappe.set_user(self._no_delete_user())
 		self.assertEqual([a["kind"] for a in orders.actions(self.so.name)["actions"]], ["accept"])
+
+	# --- Экран заказа (details) и состояние из поля воркфлоу -----------------
+
+	def test_детали_отдают_состав_итог_валюту_и_чат(self):
+		details = orders.details(self.so.name)
+		self.assertEqual(
+			[(i["item_name"], i["qty"], i["rate"], i["amount"]) for i in details["items"]],
+			[("Test Burger", 1, 2490, 2490), ("Test Cola", 2, 690, 1380)],
+		)
+		self.assertIsNone(details["delivery"])
+		self.assertEqual(details["total"], 3870)
+		self.assertEqual(details["currency"], "KZT")
+		self.assertEqual(details["currency_symbol"], frappe.db.get_value("Currency", "KZT", "symbol") or "KZT")
+		self.assertEqual(details["chat"], self.quote_chat)
+		self.assertEqual(details["state_kind"], "new")
+		self.assertEqual(details["customer_name"], "Тест Клиент")
+		self.assertEqual(details["number"], str(int(self.so.name.rsplit("-", 1)[-1])))
+		self.assertEqual(details["source"], "Telegram")
+		if frappe.get_meta("Sales Order").has_field("custom_whatsapp_number"):
+			self.assertEqual(details["phone"], "+77019990011")
+
+	def test_доставка_в_деталях_отдельной_строкой(self):
+		if not frappe.db.exists("Item", "SRV-DELIVERY"):
+			frappe.get_doc(
+				{
+					"doctype": "Item", "item_code": "SRV-DELIVERY", "item_name": "Доставка",
+					"item_group": frappe.db.get_value("Item Group", {"lft": 1}), "stock_uom": "Nos",
+					"is_stock_item": 0, "is_sales_item": 1,
+				}
+			).insert()
+		self.so.append("items", {"item_code": "SRV-DELIVERY", "item_name": "Доставка (Центр)", "qty": 1, "rate": 800})
+		self.so.save()
+		details = orders.details(self.so.name)
+		self.assertEqual(details["delivery"], {"label": "Доставка (Центр)", "amount": 800})
+		self.assertNotIn("SRV-DELIVERY", [i["item_name"] for i in details["items"]])
+		self.assertEqual(len(details["items"]), 2)
+		self.assertEqual(details["total"], 4670)
+
+	def test_детали_без_доступа_запрещены(self):
+		frappe.set_user(self._no_access_user())
+		with self.assertRaises(frappe.PermissionError):
+			orders.details(self.so.name)
+
+	def _workflow_in_db(self, state_field="custom_order_status"):
+		"""Воркфлоу как на проде: состояние в custom_order_status.
+
+		db_insert, а не insert: Workflow.on_update завёл бы на Sales Order
+		Custom Field под поле состояния — это ALTER TABLE, неявный commit, и
+		откат теста его бы не убрал. Имя воркфлоу подставляем патчем
+		_workflow — get_workflow_name кэширует в Redis, отката там нет."""
+		name = "_Habibi Test Burger Order"
+		# Откат — на весь класс (IntegrationTestCase), а не на каждый тест:
+		# воркфлоу мог остаться от соседнего теста
+		if frappe.db.exists("Workflow", name):
+			frappe.db.set_value("Workflow", name, "workflow_state_field", state_field)
+			return name
+		wf = frappe.get_doc(
+			{
+				"doctype": "Workflow", "name": name, "workflow_name": name, "document_type": "Sales Order",
+				"workflow_state_field": state_field, "is_active": 0,
+			}
+		)
+		wf.db_insert()
+		for i, (state, action, next_state) in enumerate(
+			(("New", "Confirm", "Confirmed"), ("Confirmed", "Cancel Order", "Cancelled"))
+		):
+			frappe.get_doc(
+				{
+					"doctype": "Workflow Transition", "parent": name, "parenttype": "Workflow",
+					"parentfield": "transitions", "idx": i + 1, "state": state, "action": action,
+					"next_state": next_state, "allowed": "System Manager",
+				}
+			).db_insert()
+		return name
+
+	def test_состояние_читается_из_поля_воркфлоу(self):
+		name = self._workflow_in_db()
+		doc = self.so
+		doc.workflow_state = "Не то поле"
+		doc.custom_order_status = "Confirmed"
+		doc.docstatus = 1
+		with patch("habibi_ai.cabinet.orders._workflow", return_value=name):
+			self.assertEqual(orders._state(doc), "Confirmed")
+			self.assertEqual(orders._kind(doc), "accepted")
+			doc.custom_order_status = "In Kitchen"
+			self.assertEqual(orders._kind(doc), "other")
+			doc.custom_order_status = "Cancelled"
+			self.assertEqual(orders._kind(doc), "rejected")
+			doc.docstatus = 0
+			doc.custom_order_status = "New"
+			self.assertEqual(orders._kind(doc), "new")
+
+	def test_без_состояния_воркфлоу_действий_нет_но_экран_не_падает(self):
+		"""Заказ до появления воркфлоу: get_transitions бросает
+		WorkflowStateError — кабинет показывает «нет действий», а не 500."""
+		from frappe.model.workflow import WorkflowStateError
+
+		frappe.set_user(self._no_delete_user())
+		with (
+			patch("habibi_ai.cabinet.orders._workflow", return_value="Habibi Burger Order"),
+			patch("habibi_ai.cabinet.orders.get_transitions", side_effect=WorkflowStateError),
+		):
+			self.assertEqual(orders.actions(self.so.name)["actions"], [])
+
+	# --- Права пресета на проведение ------------------------------------------
+
+	def _preset_role_user(self, role):
+		"""Пользователь только с ролью кабинета и правами из пресета food."""
+		presets.apply("food")
+		self.addCleanup(frappe.clear_cache)
+		frappe.clear_cache()
+		return _ensure_user(f"cabinet-{role.split()[-1].lower()}-only@example.com", role)
+
+	def test_владелец_проводит_заказ_бота(self):
+		frappe.set_user(self._preset_role_user("Habibi Owner"))
+		with patch("habibi_ai.cabinet.orders._workflow", return_value=None):
+			orders.apply(self.so.name, "submit")
+		self.assertEqual(frappe.db.get_value("Sales Order", self.so.name, "docstatus"), 1)
+
+	def test_сотрудник_проводит_заказ_бота(self):
+		frappe.set_user(self._preset_role_user("Habibi Staff"))
+		with patch("habibi_ai.cabinet.orders._workflow", return_value=None):
+			orders.apply(self.so.name, "submit")
+		self.assertEqual(frappe.db.get_value("Sales Order", self.so.name, "docstatus"), 1)
+
+	# --- Адаптеры списка заказов --------------------------------------------
+
+	def test_статус_в_списке_без_воркфлоу_по_docstatus(self):
+		with patch("habibi_ai.cabinet.orders._workflow", return_value=None):
+			self.assertEqual(order_status.read([self.so.name]), {self.so.name: "Черновик"})
+			orders.apply(self.so.name, "submit")
+			self.assertEqual(order_status.read([self.so.name]), {self.so.name: "Принят"})
+
+	def test_статус_в_списке_из_поля_воркфлоу(self):
+		# Список читает из базы, а колонки custom_order_status на dev нет —
+		# поле состояния воркфлоу здесь стандартное текстовое po_no: важно
+		# лишь, что читается поле из настроек воркфлоу, а не workflow_state
+		name = self._workflow_in_db(state_field="po_no")
+		frappe.db.set_value("Sales Order", self.so.name, "po_no", "Confirmed", update_modified=False)
+		with patch("habibi_ai.cabinet.orders._workflow", return_value=name):
+			self.assertEqual(order_status.read([self.so.name]), {self.so.name: "Confirmed"})
+
+	def test_сумма_в_списке_с_символом_валюты(self):
+		symbol = frappe.db.get_value("Currency", "KZT", "symbol") or "KZT"
+		self.assertEqual(order_total.read([self.so.name]), {self.so.name: f"3 870 {symbol}"})
+		self.assertEqual(order_total.read([]), {})

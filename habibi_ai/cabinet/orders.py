@@ -5,12 +5,17 @@
 уже работает, а клиенту можно написать повторно.
 """
 
+import re
+
 import frappe
 from frappe import _
-from frappe.model.workflow import apply_workflow, get_transitions, get_workflow_name
+from frappe.model.workflow import WorkflowStateError, apply_workflow, get_transitions, get_workflow_name
+from frappe.utils.caching import request_cache
 
 from habibi_ai import notify_rules
 from habibi_ai.channels import telegram
+from habibi_ai.order_rules import DELIVERY_ITEM
+from habibi_ai.tools.orders import SOURCE_BY_CHANNEL, payable
 
 TEMPLATES = {"accept": "order_accepted", "reject": "order_rejected"}
 
@@ -47,10 +52,53 @@ def _chat(name):
 	return quote.channel_name if _pair(quote.channel_name) else None
 
 
+@request_cache
+def _state_field(workflow):
+	"""Поле, где воркфлоу хранит состояние. Не всегда workflow_state: прод-
+	воркфлоу «Habibi Burger Order» пишет его в custom_order_status."""
+	return frappe.db.get_value("Workflow", workflow, "workflow_state_field") or "workflow_state"
+
+
+@request_cache
+def _targets(workflow):
+	"""Состояние → действия, которые в него ведут: по ним видно, что заказ
+	именно принят (или отклонён), а не ушёл дальше — на кухню, в доставку."""
+	result = {}
+	for t in frappe.get_all(
+		"Workflow Transition", filters={"parent": workflow, "parenttype": "Workflow"}, fields=["action", "next_state"]
+	):
+		result.setdefault(t.next_state, set()).add(t.action)
+	return result
+
+
 def _state(doc):
-	if _workflow(doc):
-		return doc.get("workflow_state") or ""
+	workflow = _workflow(doc)
+	if workflow:
+		return doc.get(_state_field(workflow)) or ""
 	return {0: _("Черновик"), 1: _("Принят"), 2: _("Отменён")}[doc.docstatus]
+
+
+def _kind(doc):
+	"""Смысл состояния для бейджа: new | accepted | rejected | other.
+
+	Имена состояний у каждого воркфлоу свои, поэтому смысл берём из
+	docstatus и из того, каким действием (accept/reject из настроек) в это
+	состояние приходят; остальное после подтверждения — «other».
+	"""
+	if doc.docstatus == 0:
+		return "new"
+	if doc.docstatus == 2:
+		return "rejected"
+	workflow = _workflow(doc)
+	if not workflow:
+		return "accepted"
+	accept, reject = _names()
+	via = _targets(workflow).get(_state(doc), set())
+	if reject in via:
+		return "rejected"
+	if accept in via:
+		return "accepted"
+	return "other"
 
 
 def _may_discard(doc):
@@ -62,9 +110,17 @@ def _may_discard(doc):
 def _available(doc):
 	if _workflow(doc):
 		accept, reject = _names()
+		try:
+			allowed = get_transitions(doc)
+		except WorkflowStateError:
+			# Заказ без состояния (заведён до воркфлоу) — переходов нет, но
+			# экран заказа должен открыться, а не упасть
+			frappe.clear_last_message()
+			allowed = []
+		# Переходы разрешены ролям воркфлоу (на проде — Burger Order Desk и
+		# т.п.). Без такой роли список пуст, и экран подсказывает, к кому идти.
 		transitions = [
-			{"action": t["action"], "kind": notify_rules.kind_of(t["action"], accept, reject)}
-			for t in get_transitions(doc)
+			{"action": t["action"], "kind": notify_rules.kind_of(t["action"], accept, reject)} for t in allowed
 		]
 		# Прод-воркфлоу («Habibi Burger Order») не выпускает черновик иначе,
 		# чем через «Confirm» — выхода в «отклонить» из New там нет вовсе.
@@ -91,6 +147,75 @@ def actions(name):
 	doc = frappe.get_doc("Sales Order", name)
 	doc.check_permission("read")
 	return {"state": _state(doc), "actions": _available(doc), "can_notify": _chat(name) is not None}
+
+
+def _optional(doc, meta, fieldname):
+	"""Поле, заведённое руками на конкретном сайте: нет в мете — None."""
+	return doc.get(fieldname) if meta.has_field(fieldname) else None
+
+
+def _number(name):
+	"""«SAL-ORD-2026-00018» → «18»: владельцу длинное имя ни к чему."""
+	match = re.search(r"(\d+)$", name)
+	return str(int(match.group(1))) if match else name
+
+
+@frappe.whitelist()
+def details(name):
+	"""Всё, что нужно экрану заказа: состав с ценами, доставка отдельно,
+	итог в валюте заказа, клиент и ссылка на переписку.
+
+	Отдельный метод, а не поля раздела: позиции — дочерняя таблица, а валюта
+	и чат живут в других документах. Отдаём только перечисленное здесь.
+	"""
+	doc = frappe.get_doc("Sales Order", name)
+	doc.check_permission("read")
+	doc.apply_fieldlevel_read_permissions()
+	meta = frappe.get_meta("Sales Order")
+	quote = _quote(name)
+
+	items, delivery = [], None
+	for row in doc.items:
+		if row.item_code == DELIVERY_ITEM:
+			delivery = {"label": row.item_name, "amount": float(row.amount or 0)}
+			continue
+		items.append(
+			{"item_name": row.item_name, "qty": row.qty, "rate": float(row.rate or 0), "amount": float(row.amount or 0)}
+		)
+
+	chat = None
+	if (
+		quote
+		and quote.channel_doctype == "Telegram Chat"
+		and quote.channel_name
+		and frappe.has_permission("Telegram Chat", "read")
+	):
+		chat = quote.channel_name
+
+	return {
+		"name": doc.name,
+		"number": _number(doc.name),
+		"created": str(doc.creation),
+		"source": _optional(doc, meta, "custom_order_source")
+		or (SOURCE_BY_CHANNEL.get(quote.channel_doctype) if quote else None),
+		"state": _state(doc),
+		"state_kind": _kind(doc),
+		"customer_name": doc.customer_name,
+		"phone": _optional(doc, meta, "custom_whatsapp_number") or doc.get("contact_mobile") or None,
+		"fulfilment": _optional(doc, meta, "custom_fulfilment_type"),
+		"zone": _optional(doc, meta, "custom_delivery_zone"),
+		"address": doc.get("shipping_address") or doc.get("address_display") or None,
+		"notes": _optional(doc, meta, "custom_kitchen_notes"),
+		"items": items,
+		"delivery": delivery,
+		# Как у бота (tools.orders.payable): округлённый итог, если на сайте
+		# включено округление, — клиенту названа именно эта сумма
+		"total": payable(doc),
+		"taxes": float(doc.total_taxes_and_charges or 0),
+		"currency": doc.currency,
+		"currency_symbol": frappe.db.get_value("Currency", doc.currency, "symbol") or doc.currency,
+		"chat": chat,
+	}
 
 
 def _draft_text(kind, doc, reason=None):
