@@ -11,13 +11,26 @@ FEATURES = {
 }
 
 
-def enabled(values):
+def _on(value):
 	"""None — поле ни разу не сохраняли: считаем включённым.
 
 	Иначе сайт, где бот уже принимал заказы, после миграции молча потерял бы
 	инструменты заказа — флаги появились позже, чем заказы.
+
+	"" — то же самое, что 0, а не повод упасть: значения из tabSingles
+	приходят сырыми строками (frappe.db.get_singles_dict без cast, чтобы не
+	тянуть устаревший cast_fieldtype), и пустая строка там такой же законный
+	сырой вид «выключено», как и "0" — int("") бросил бы ValueError.
 	"""
-	return {key for key, (field, _tools) in FEATURES.items() if values.get(field) is None or int(values[field])}
+	if value is None:
+		return True
+	if value == "":
+		return False
+	return bool(int(value))
+
+
+def enabled(values):
+	return {key for key, (field, _tools) in FEATURES.items() if _on(values.get(field))}
 
 
 def offered(names, enabled_keys):

@@ -157,8 +157,13 @@ def feature_values():
 	habibi-erp.com. frappe.db.exists("Singles", ...) для этой цели не
 	подходит: "Singles" не зарегистрирован как DocType, и get_value/exists
 	тихо возвращают None на любой filters из-за ignore=True в exists().
+
+	Без cast=True: тот путь внутри Frappe зовёт устаревший
+	cast_fieldtype и на каждый вызов run_turn печатает предупреждение об
+	устаревании. Сырые строки из tabSingles ("0"/"1"/"") приводит к типу уже
+	features.enabled — модуль без frappe, ему и решать.
 	"""
-	saved = frappe.db.get_singles_dict("Habibi AI Settings", cast=True)
+	saved = frappe.db.get_singles_dict("Habibi AI Settings")
 	return {field: saved.get(field) for field, _tools in features.FEATURES.values()}
 
 
