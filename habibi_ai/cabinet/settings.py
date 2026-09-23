@@ -134,22 +134,22 @@ ACCOUNT = "Telegram Account"
 # status доктайпа → состояние экрана кабинета
 STATES = {"Code Sent": "code_sent", "Password Required": "password_needed", "Connected": "connected"}
 
-AI_NOT_READY = _("ИИ-бот не выбран — обратитесь к администратору")
+AI_NOT_READY = "ИИ-бот не выбран — обратитесь к администратору"
 
 # Имя класса исключения Telethon → что показать владельцу. Сверяем по имени,
 # а не isinstance: user_client оборачивает их во frappe.throw, и до нас
 # доходит ValidationError, у которого исходное исключение лежит в __context__.
 TELEGRAM_ERRORS = {
-	"PhoneNumberInvalidError": _("Telegram не знает такой номер — проверьте его"),
-	"PhoneNumberBannedError": _("Этот номер заблокирован в Telegram"),
-	"PhoneNumberUnoccupiedError": _("На этот номер не зарегистрирован Telegram"),
-	"PhoneNumberFloodError": _("Слишком много попыток входа с этого номера — попробуйте позже"),
-	"PhoneCodeInvalidError": _("Неверный код"),
-	"PhoneCodeEmptyError": _("Введите код из Telegram"),
-	"PhoneCodeExpiredError": _("Код истёк — запросите новый"),
-	"PasswordHashInvalidError": _("Неверный пароль двухэтапной проверки"),
-	"AuthKeyUnregisteredError": _("Telegram завершил сессию — войдите заново"),
-	"SessionRevokedError": _("Telegram завершил сессию — войдите заново"),
+	"PhoneNumberInvalidError": "Telegram не знает такой номер — проверьте его",
+	"PhoneNumberBannedError": "Этот номер заблокирован в Telegram",
+	"PhoneNumberUnoccupiedError": "На этот номер не зарегистрирован Telegram",
+	"PhoneNumberFloodError": "Слишком много попыток входа с этого номера — попробуйте позже",
+	"PhoneCodeInvalidError": "Неверный код",
+	"PhoneCodeEmptyError": "Введите код из Telegram",
+	"PhoneCodeExpiredError": "Код истёк — запросите новый",
+	"PasswordHashInvalidError": "Неверный пароль двухэтапной проверки",
+	"AuthKeyUnregisteredError": "Telegram завершил сессию — войдите заново",
+	"SessionRevokedError": "Telegram завершил сессию — войдите заново",
 }
 
 
@@ -185,7 +185,7 @@ def _safe_telegram_error(error):
 			return _("Слишком много попыток — попробуйте позже")
 		for name, text in TELEGRAM_ERRORS.items():
 			if name in names:
-				return text
+				return _(text)
 	return _("Telegram не принял запрос — попробуйте ещё раз позже")
 
 
@@ -251,7 +251,7 @@ def telegram_status():
 		full_name=doc.full_name or None,
 		username=doc.username or None,
 		ai_ready=ai_ready,
-		ai_note=None if ai_ready else AI_NOT_READY,
+		ai_note=None if ai_ready else _(AI_NOT_READY),
 	)
 	if state == "error":
 		status["error"] = _("Telegram завершил сессию — войдите заново")
