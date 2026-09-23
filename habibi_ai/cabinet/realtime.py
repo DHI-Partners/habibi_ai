@@ -15,6 +15,8 @@ Habibi Staff или System Manager. В малом бизнесе это одна
 import frappe
 from frappe.query_builder import DocType
 
+from habibi_ai.cabinet import scope
+
 EVENT = "habibi_cabinet"
 CABINET_ROLES = ("Habibi Owner", "Habibi Staff", "System Manager")
 
@@ -45,7 +47,7 @@ def _recipients():
 
 
 def on_change(doc, method=None):
-	"""Хук на after_insert/on_update/on_submit нескольких доктайпов.
+	"""Хук на after_insert/on_update/on_submit/on_cancel нескольких доктайпов.
 
 	Ошибка здесь не должна ронять запись сообщения, обновление заказа или
 	паузу чата — событие кабинета вторично по отношению к самой операции.
@@ -65,9 +67,12 @@ def _on_change(doc):
 		if not frappe.db.exists("AI Order Quote", {"sales_order": doc.name}):
 			return
 		payload = {"topic": "orders", "chat": None}
-	elif doc.doctype == "AI Channel Chat":
-		payload = {"topic": "chats", "chat": doc.telegram_chat}
 	else:
-		payload = {"topic": "chats", "chat": doc.chat}
+		chat = doc.telegram_chat if doc.doctype == "AI Channel Chat" else doc.chat
+		# То же правило, что у списка переписок: сообщения групп, служебного
+		# чата и синхронизации истории чужих диалогов кабинет не будят
+		if not scope.in_scope(chat):
+			return
+		payload = {"topic": "chats", "chat": chat}
 	for user in _recipients():
 		frappe.publish_realtime(EVENT, payload, user=user, after_commit=True)

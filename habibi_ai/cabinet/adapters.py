@@ -9,7 +9,9 @@
 """
 
 import frappe
+from frappe import _
 from frappe.model import default_fields
+from frappe.utils import flt
 
 from habibi_ai.cabinet import orders
 from habibi_ai.cabinet.money import money
@@ -49,11 +51,25 @@ class SellingPrice:
 
 		Историю цен с датами владелец в кабинете не ведёт: ему нужна «цена
 		сейчас». Цены с датами из Desk не трогаем — их правят там же.
+
+		Форма присылает цену при каждом сохранении позиции, даже если её не
+		трогали: пустое значение — «цену не задавали», а не «цена 0» (иначе
+		сохранение позиции без цены заводило бы Item Price с нулём, и бот
+		предлагал бы блюдо бесплатно); то же, что уже действует, — не повод
+		писать (у цены с датами из Desk появилась бы бессрочная копия).
 		"""
+		if value is None or value == "":
+			return
+		value = flt(value)
+		if value < 0:
+			frappe.throw(_("Цена не может быть отрицательной"))
+		current = self.read([doc.name]).get(doc.name)
+		if current is not None and flt(current) == value:
+			return
 		price_list = self._price_list()
 		existing = frappe.db.get_value(
 			"Item Price",
-			{"item_code": doc.name, "price_list": price_list, "valid_upto": ["is", "not set"]},
+			{"item_code": doc.name, "price_list": price_list, "selling": 1, "valid_upto": ["is", "not set"]},
 			"name",
 		)
 		if existing:

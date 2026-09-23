@@ -168,14 +168,36 @@ def feature_values():
 
 
 def features_hook():
-	"""Хук habibi_cabinet_features: какие возможности включены на сайте."""
-	return features.enabled(feature_values())
+	"""Хук habibi_cabinet_features: какие возможности включены на сайте.
+
+	На горячем пути бота: сбой чтения флагов не должен стоить ответа клиенту.
+	Запасной вариант — всё включено, как было до появления флагов (и как
+	features._on для никогда не сохранённого поля). Дедлок и таймаут
+	блокировки — наружу: транзакция уже откачена, пусть вызывающий повторит
+	(как в channels.telegram.on_message_insert)."""
+	try:
+		return features.enabled(feature_values())
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
+	except Exception:
+		frappe.log_error(title="ИИ: флаги возможностей", message=frappe.get_traceback())
+		return features.enabled({})
 
 
 def tenant_context():
-	"""Бизнес-профиль владельца, отрендеренный для system prompt движка."""
-	doc = frappe.get_single("Business Profile")
-	return business_profile.render(doc.as_dict(), [r.as_dict() for r in doc.rules])
+	"""Бизнес-профиль владельца, отрендеренный для system prompt движка.
+
+	Сбой — пустая строка: бот ответит без профиля, как до кабинета, а не
+	промолчит (step не передаёт пустой tenant_context движку вовсе).
+	Дедлок и таймаут — наружу, как в features_hook."""
+	try:
+		doc = frappe.get_single("Business Profile")
+		return business_profile.render(doc.as_dict(), [r.as_dict() for r in doc.rules])
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
+	except Exception:
+		frappe.log_error(title="ИИ: бизнес-профиль", message=frappe.get_traceback())
+		return ""
 
 
 def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=None, message_at=None):

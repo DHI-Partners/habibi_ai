@@ -47,3 +47,25 @@ class TestSellingPrice(IntegrationTestCase):
 		frappe.db.set_single_value("Selling Settings", "selling_price_list", None)
 		self.assertFalse(selling_price.editable())
 		self.assertEqual(selling_price.read([self.item.name]), {})
+
+	def test_пустая_цена_не_пишется(self):
+		"""Форма шлёт цену при каждом сохранении — пусто значит «не задавали»,
+		а не «бесплатно»."""
+		for empty in (None, ""):
+			with self.subTest(repr(empty)):
+				selling_price.write(self.item, empty)
+				self.assertFalse(frappe.db.exists("Item Price", {"item_code": self.item.name}))
+
+	def test_та_же_цена_не_пишется_повторно(self):
+		"""Действующая цена с датами из Desk не должна обрасти бессрочной копией
+		лишь потому, что позицию сохранили в кабинете, не трогая цену."""
+		frappe.get_doc({"doctype": "Item Price", "item_code": self.item.name, "price_list": PRICE_LIST,
+			"price_list_rate": 1500, "valid_from": "2020-01-01", "valid_upto": "2099-01-01"}).insert()
+		selling_price.write(self.item, "1500")
+		self.assertEqual(frappe.db.count("Item Price", {"item_code": self.item.name}), 1)
+
+	def test_отрицательная_цена_отклоняется(self):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			selling_price.write(self.item, -10)
+		self.assertIn("отрицательной", str(ctx.exception))
+		self.assertFalse(frappe.db.exists("Item Price", {"item_code": self.item.name}))

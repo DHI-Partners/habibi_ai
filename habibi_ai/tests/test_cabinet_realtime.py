@@ -9,6 +9,13 @@ from habibi_ai.cabinet import realtime
 
 
 class TestCabinetRealtime(IntegrationTestCase):
+	def setUp(self):
+		# Фиктивные чаты C1, C2… — не настоящие Telegram Chat; правило «чат
+		# кабинета» проверяют отдельные тесты ниже, здесь — кому и что шлём
+		patcher = patch("habibi_ai.cabinet.realtime.scope.in_scope", return_value=True)
+		self.in_scope = patcher.start()
+		self.addCleanup(patcher.stop)
+
 	def tearDown(self):
 		frappe.set_user("Administrator")
 		frappe.db.rollback()
@@ -117,3 +124,34 @@ class TestCabinetRealtime(IntegrationTestCase):
 				with patch("habibi_ai.cabinet.realtime._on_change", side_effect=error("сбой")):
 					with self.assertRaises(error):
 						realtime.on_change(doc)
+
+	def test_чат_вне_кабинета_не_шумит(self):
+		"""Сообщения групп, служебного чата 777000 и синхронизации истории
+		диалогов без ИИ-канала кабинет не будят — то же правило, что у списка."""
+		self.in_scope.return_value = False
+		with (
+			patch("habibi_ai.cabinet.realtime._recipients", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
+			realtime.on_change(frappe._dict(doctype="Telegram Message", chat="C-GROUP"))
+			realtime.on_change(frappe._dict(doctype="AI Channel Chat", telegram_chat="C-SERVICE"))
+		pub.assert_not_called()
+		self.assertEqual([c.args[0] for c in self.in_scope.call_args_list], ["C-GROUP", "C-SERVICE"])
+
+	def test_смена_статуса_проведённого_заказа_шлёт_событие(self):
+		"""Воркфлоу двигает проведённый заказ через on_update_after_submit, отказ
+		— отменой: оба события заказа от бота должны дойти до кабинета."""
+		hooks = frappe.get_hooks("doc_events")["Sales Order"]
+		for event in ("on_update", "on_submit", "on_update_after_submit", "on_cancel"):
+			with self.subTest(event):
+				self.assertIn("habibi_ai.cabinet.realtime.on_change", hooks[event])
+		doc = frappe._dict(doctype="Sales Order", name="SO-BOT", docstatus=1)
+		with (
+			patch("habibi_ai.cabinet.realtime.frappe.db.exists", return_value=True),
+			patch("habibi_ai.cabinet.realtime._recipients", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
+			realtime.on_change(doc, "on_update_after_submit")
+		pub.assert_called_once_with(
+			"habibi_cabinet", {"topic": "orders", "chat": None}, user="owner@example.com", after_commit=True
+		)

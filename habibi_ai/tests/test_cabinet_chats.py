@@ -297,3 +297,82 @@ class TestCabinetChats(IntegrationTestCase):
 				chats.send(self.chat.name, "Сейчас уточню")
 		self.assertNotIn("hash-secret", str(ctx.exception))
 		self.assertNotIn("hash-secret", frappe.as_json(frappe.local.message_log))
+
+
+class TestCabinetChatScope(IntegrationTestCase):
+	"""Аккаунт Telegram видит все свои диалоги — кабинету из них положены только
+	переписки ИИ-канала: без кодов входа, «Избранного» и личных чатов владельца."""
+
+	SELF_ID = "990777"
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		title = "_Habibi Cabinet Scope Account"
+		if frappe.db.exists("Telegram Account", title):
+			self.account = frappe.get_doc("Telegram Account", title)
+		else:
+			self.account = frappe.get_doc(
+				{
+					"doctype": "Telegram Account", "title": title, "phone": "+70000000001",
+					"api_id": "1", "api_hash": "x", "account_id": self.SELF_ID,
+				}
+			).insert()
+		# Служебный чат с кодами входа и «Избранное» — с парой: канал на
+		# аккаунте заводит её на любой диалог, где хоть раз решал, отвечать ли
+		self.service = self._chat("777000", "Telegram", paired=True)
+		self.saved = self._chat(self.SELF_ID, "Избранное", paired=True)
+		self.personal = self._chat("990778", "Мама", paired=False)
+		self.client = self._chat("990779", "Клиент", paired=True)
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback()
+
+	def _chat(self, chat_id, title, paired):
+		chat = frappe.get_doc(
+			{"doctype": "Telegram Chat", "chat_id": chat_id, "title": title, "type": "private"}
+		).insert(ignore_if_duplicate=True)
+		frappe.get_doc(
+			{"doctype": "Telegram Message", "chat": chat.name, "direction": "Incoming", "content": "код 12345"}
+		).db_insert()
+		if paired and not frappe.db.exists("AI Channel Chat", {"telegram_chat": chat.name}):
+			frappe.get_doc(
+				{
+					"doctype": "AI Channel Chat",
+					"channel_doctype": "Telegram Account",
+					"channel_name": self.account.name,
+					"telegram_chat": chat.name,
+				}
+			).insert()
+		return chat.name
+
+	def test_в_списке_только_переписки_ии_канала(self):
+		listed = {c["chat"] for c in chats.list()}
+		self.assertIn(self.client, listed)
+		for hidden in (self.service, self.saved, self.personal):
+			with self.subTest(hidden):
+				self.assertNotIn(hidden, listed)
+
+	def test_лента_и_действия_вне_кабинета_как_несуществующий_чат(self):
+		self.assertTrue(chats.messages(self.client))
+		for hidden in (self.service, self.saved, self.personal):
+			with self.subTest(hidden):
+				with self.assertRaises(frappe.DoesNotExistError):
+					chats.messages(hidden)
+				with self.assertRaises(frappe.DoesNotExistError):
+					chats.pause(hidden)
+				with self.assertRaises(frappe.DoesNotExistError):
+					chats.resume(hidden)
+				with patch("habibi_ai.cabinet.chats.telegram.send") as send:
+					with self.assertRaises(frappe.DoesNotExistError):
+						chats.send(hidden, "Привет")
+					send.assert_not_called()
+
+	def test_realtime_только_по_перепискам_кабинета(self):
+		with (
+			patch("habibi_ai.cabinet.realtime._recipients", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
+			for chat in (self.service, self.saved, self.personal, self.client):
+				chats.realtime.on_change(frappe._dict(doctype="Telegram Message", chat=chat))
+		self.assertEqual([c.args[1]["chat"] for c in pub.call_args_list], [self.client])

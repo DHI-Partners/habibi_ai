@@ -48,3 +48,25 @@ class TestPresets(IntegrationTestCase):
 		presets.apply("food")
 		for role in ("Habibi Owner", "Habibi Staff"):
 			self.assertTrue(frappe.db.exists("Custom DocPerm", {"parent": "Account", "role": role, "read": 1}))
+
+	def test_флаги_и_действия_админа_не_перетираются(self):
+		"""Выключенная доставка и своё действие отказа — решения админа, а не
+		пробел в настройках: повторный пресет их не возвращает."""
+		presets.apply("food")
+		settings = frappe.get_single("Habibi AI Settings")
+		settings.feature_delivery = 0
+		settings.reject_action = "Reject"
+		settings.save()
+		presets.apply("food")
+		settings = frappe.get_single("Habibi AI Settings")
+		self.assertEqual(settings.feature_delivery, 0)
+		self.assertEqual(settings.reject_action, "Reject")
+
+	def test_несохранённые_флаги_и_действия_заполняются(self):
+		frappe.db.delete("Singles", {"doctype": "Habibi AI Settings"})
+		frappe.clear_document_cache("Habibi AI Settings", "Habibi AI Settings")
+		presets.apply("food")
+		saved = frappe.db.get_singles_dict("Habibi AI Settings")
+		self.assertEqual(str(saved.get("feature_delivery")), "1")
+		self.assertEqual(saved.get("accept_action"), "Confirm")
+		self.assertEqual(saved.get("reject_action"), "Cancel Order")

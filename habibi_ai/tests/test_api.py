@@ -354,6 +354,43 @@ class TestПрофильИВозможности(IntegrationTestCase):
 		self.assertNotIn("get_delivery_zones", offered)
 		self.assertIn("quote_order", offered)
 
+	def test_сбой_профиля_не_мешает_ответу(self):
+		"""Профиль — добавка к промпту, а не условие ответа: сбой чтения (нет
+		Singles, битая строка правил) — ход идёт без tenant_context."""
+		for error in (frappe.DoesNotExistError("нет профиля"), RuntimeError("сбой")):
+			with self.subTest(type(error).__name__):
+				client = self._client_answering("ok")
+				with (
+					patch("habibi_ai.api.frappe.get_single", side_effect=error),
+					patch("habibi_ai.api.frappe.log_error") as log_error,
+				):
+					result = api.run_turn(client, 5, "привет")
+				self.assertEqual(result["response"], "ok")
+				self.assertFalse(client.step.call_args.kwargs["tenant_context"])
+				log_error.assert_called_once()
+
+	def test_сбой_флагов_предлагает_инструменты_как_раньше(self):
+		"""Флаги не прочитались — все возможности включены, как до флагов."""
+		client = self._client_answering("ok")
+		with (
+			patch("habibi_ai.api.feature_values", side_effect=RuntimeError("сбой")),
+			patch("habibi_ai.api.frappe.log_error") as log_error,
+		):
+			api.run_turn(client, 5, "привет")
+		offered = {t["name"] for t in client.step.call_args.kwargs["tools"]}
+		self.assertEqual(offered, set(api._tool_names()))
+		log_error.assert_called_once()
+
+	def test_дедлок_в_профиле_и_флагах_пробрасывается(self):
+		for error in (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+			with self.subTest(error.__name__):
+				with patch("habibi_ai.api.frappe.get_single", side_effect=error("сбой")):
+					with self.assertRaises(error):
+						api.tenant_context()
+				with patch("habibi_ai.api.feature_values", side_effect=error("сбой")):
+					with self.assertRaises(error):
+						api.features_hook()
+
 
 class TestЧужойЧат(unittest.TestCase):
 	"""В чатах движка теперь и переписка клиентов из Telegram — её не должен

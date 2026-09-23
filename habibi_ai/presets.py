@@ -3,6 +3,22 @@
 Идемпотентно — см. preset_rules. Поля пресета, которых нет на сайте,
 вычищаются здесь, а не в кабинете: иначе раздел целиком выпадал бы из-за
 одного своего поля, заведённого руками только на проде.
+
+Что пресет перезаписывает: только разделы Cabinet Settings, которыми он
+владеет, — по ключу (menu, zones, orders…): поля такого раздела берутся из
+пресета, правки владельца в них пропадут. Всё остальное пресет не трогает
+или только дополняет:
+- чужие разделы (ключи не из пресета) — остаются как есть;
+- правила Business Profile — пресет задаёт заголовки и подсказки, текст
+  владельца сохраняется, чужие правила остаются;
+- флаги возможностей и действия «принять»/«отклонить» Habibi AI Settings —
+  только если их на сайте ещё не сохраняли (строки нет в tabSingles; для
+  действий — и пустое значение): выключенная админом доставка или своё
+  действие отказа переживают повторное применение;
+- шаблоны Telegram Message Template — только создаются, если их нет;
+- права — только добавляются. add_permission переносит стандартные права
+  затронутого DocType в Custom DocPerm (copy_perms), и дальнейшие изменения
+  прав в JSON приложений на этом сайте для него сами уже не применятся.
 """
 
 import json
@@ -67,6 +83,19 @@ def _fit(section, skipped):
 	return fitted
 
 
+def _unsaved(doctype, features, workflow):
+	"""Значения пресета только для полей, которых на сайте ещё не сохраняли.
+
+	Отличить «не сохраняли» от сохранённого 0 умеет только get_singles_dict
+	(строки нет в tabSingles) — та же логика, что у api.feature_values. Флаг
+	0 — решение админа; пустое действие решением не бывает, его заполняем.
+	"""
+	saved = frappe.db.get_singles_dict(doctype)
+	result = {k: v for k, v in features.items() if k not in saved}
+	result.update({k: v for k, v in workflow.items() if not saved.get(k)})
+	return result
+
+
 def apply(name):
 	preset = _load(name)
 	skipped = []
@@ -87,7 +116,7 @@ def apply(name):
 	profile.save()
 
 	settings = frappe.get_single("Habibi AI Settings")
-	settings.update({**preset["features"], **preset["workflow"]})
+	settings.update(_unsaved(settings.doctype, preset["features"], preset["workflow"]))
 	settings.save()
 
 	created = 0

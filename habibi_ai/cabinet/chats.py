@@ -8,7 +8,7 @@ import frappe
 from frappe import _
 from frappe.utils import now_datetime
 
-from habibi_ai.cabinet import realtime
+from habibi_ai.cabinet import realtime, scope
 from habibi_ai.channels import decisions, telegram
 
 PAIR = "AI Channel Chat"
@@ -27,12 +27,18 @@ def _check_chat_permission(chat):
 	"""Плюс к общему праву — право именно на этот документ: User Permission
 	режет доступ по конкретным чатам, а не только по типу документа."""
 	_check_list_permission()
+	scope.require(chat)
 	if not frappe.has_permission("Telegram Chat", "read", doc=chat):
 		frappe.throw(_("Нет доступа к этому чату"), frappe.PermissionError)
 
 
 def _pair(chat):
-	"""Пара канал+чат, которой ведётся диалог с этим чатом."""
+	"""Пара канал+чат, которой ведётся диалог с этим чатом.
+
+	Служебный чат и «Избранное» отсекаются и здесь: пара у них может быть
+	(канал на аккаунте), но ни ответить туда, ни снять паузу из кабинета
+	нельзя — см. cabinet.scope."""
+	scope.require(chat)
 	name = frappe.db.get_value(PAIR, {"telegram_chat": chat}, "name", order_by="modified desc")
 	if not name:
 		frappe.throw(_("Чат не подключён к боту"), frappe.DoesNotExistError)
@@ -53,7 +59,9 @@ def list():
 	rows = frappe.get_list(
 		"Telegram Chat",
 		fields=["name", "title", "last_message_content", "last_message_on"],
-		filters={"type": "private"},
+		# Только переписки кабинета — без служебного чата с кодами входа,
+		# «Избранного» и личных диалогов без ИИ-канала (cabinet.scope)
+		filters=scope.list_filters(),
 		order_by="last_message_on desc",
 		limit=LIST_LIMIT,
 	)

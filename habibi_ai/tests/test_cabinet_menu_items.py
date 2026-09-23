@@ -75,3 +75,33 @@ class TestCabinetMenuItemCode(IntegrationTestCase):
 			}
 		).insert()
 		self.assertEqual(doc.name, "_HB-MENU-MANUAL-CODE")
+
+
+class TestCabinetMenuItemPrice(IntegrationTestCase):
+	"""Цена позиции из формы кабинета: пустая — не пишется, отрицательная — ошибка."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		presets.apply("food")
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		if not frappe.db.exists("Price List", PRICE_LIST):
+			frappe.get_doc(
+				{"doctype": "Price List", "price_list_name": PRICE_LIST, "selling": 1, "currency": "KZT", "enabled": 1}
+			).insert()
+		frappe.db.set_single_value("Selling Settings", "selling_price_list", PRICE_LIST)
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback()
+
+	def test_позиция_без_цены_сохраняется_без_item_price(self):
+		result = cabinet_api.save("menu", {"item_name": "Позиция без цены", "selling_price": None})
+		self.assertFalse(frappe.db.exists("Item Price", {"item_code": result["name"]}))
+		self.assertIsNone(result["selling_price"])
+
+	def test_отрицательная_цена_из_формы_отклоняется(self):
+		with self.assertRaises(frappe.ValidationError):
+			cabinet_api.save("menu", {"item_name": "Позиция с минусом", "selling_price": -5})

@@ -44,6 +44,10 @@ doc_events = {
 	"Sales Order": {
 		"on_update": "habibi_ai.cabinet.realtime.on_change",
 		"on_submit": "habibi_ai.cabinet.realtime.on_change",
+		# Воркфлоу двигает проведённый заказ через on_update_after_submit, отказ —
+		# отменой: без них кабинет узнавал бы о смене статуса только по F5
+		"on_update_after_submit": "habibi_ai.cabinet.realtime.on_change",
+		"on_cancel": "habibi_ai.cabinet.realtime.on_change",
 	},
 	"AI Channel Chat": {"on_update": "habibi_ai.cabinet.realtime.on_change"},
 }
