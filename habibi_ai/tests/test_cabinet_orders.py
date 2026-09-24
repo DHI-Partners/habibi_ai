@@ -233,6 +233,25 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 		if frappe.get_meta("Sales Order").has_field("custom_whatsapp_number"):
 			self.assertEqual(details["phone"], "+77019990011")
 
+	def test_чат_вне_кабинета_не_отдаётся(self):
+		"""Групповой чат кабинет не откроет (scope.in_scope) — ссылка
+		«Переписка» вела бы на «не найдено»."""
+		frappe.db.set_value("Telegram Chat", self.quote_chat, "type", "group")
+		self.assertIsNone(orders.details(self.so.name)["chat"])
+
+	def test_чат_без_пары_не_отдаётся(self):
+		frappe.db.delete("AI Channel Chat", {"telegram_chat": self.quote_chat})
+		self.assertIsNone(orders.details(self.so.name)["chat"])
+
+	def test_причина_не_уходит_с_принять(self):
+		"""Фронт шлёт reason с любым действием — в сообщение о приёме она не попадает."""
+		frappe.db.set_value(
+			"Telegram Message Template", "order_accepted", "default_template", "Принят{reason}"
+		)
+		with patch("habibi_ai.cabinet.orders._workflow", return_value=None):
+			result = orders.apply(self.so.name, "submit", reason="закончилась булка")
+		self.assertEqual(result["notify"]["text"], "Принят")
+
 	def test_доставка_в_деталях_отдельной_строкой(self):
 		if not frappe.db.exists("Item", "SRV-DELIVERY"):
 			frappe.get_doc(

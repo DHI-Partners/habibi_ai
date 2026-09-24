@@ -13,6 +13,7 @@ from frappe.model.workflow import WorkflowStateError, apply_workflow, get_transi
 from frappe.utils.caching import request_cache
 
 from habibi_ai import notify_rules
+from habibi_ai.cabinet import scope
 from habibi_ai.cabinet.money import money
 from habibi_ai.channels import telegram
 from habibi_ai.order_rules import DELIVERY_ITEM
@@ -188,12 +189,14 @@ def details(name):
 			{"item_name": row.item_name, "qty": row.qty, "rate": float(row.rate or 0), "amount": float(row.amount or 0)}
 		)
 
+	# Ссылка «Переписка» — только на чат, который кабинет откроет: групповой
+	# чат или чат без пары ИИ-канала раздел переписок покажет как «не найден»
 	chat = None
 	if (
 		quote
 		and quote.channel_doctype == "Telegram Chat"
-		and quote.channel_name
 		and frappe.has_permission("Telegram Chat", "read")
+		and scope.in_scope(quote.channel_name)
 	):
 		chat = quote.channel_name
 
@@ -275,7 +278,10 @@ def apply(name, action, reason=None):
 
 	notify = None
 	if chat and kind in TEMPLATES:
-		notify = {"kind": kind, "text": _draft_text(kind, snapshot, reason)}
+		# Причина — только для отказа: фронт шлёт её с любым действием, а
+		# клиенту в «принят» чужая причина отказа ни к чему
+		why = reason if kind == "reject" else None
+		notify = {"kind": kind, "text": _draft_text(kind, snapshot, why)}
 	return {"state": state, "notify": notify}
 
 
