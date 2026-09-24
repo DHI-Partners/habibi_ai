@@ -1,6 +1,6 @@
 import unittest
 
-from habibi_ai.profile import render
+from habibi_ai.profile import DESCRIPTION_MAX, RULE_TEXT_MAX, RULE_TITLE_MAX, RULES_MAX, render
 
 
 class TestProfile(unittest.TestCase):
@@ -29,3 +29,28 @@ class TestProfile(unittest.TestCase):
 
 	def test_пустой_профиль_пустой_текст(self):
 		self.assertEqual(render({}, []), "")
+
+	def test_сверхдлинное_из_desk_обрезается_с_многоточием(self):
+		"""Данные, заведённые в Desk в обход кабинета, не раздувают промпт бота."""
+		warnings = []
+		text = render(
+			{"description": "а" * 5000},
+			[{"title": "б" * 200, "text": "в" * 5000}]
+			+ [{"title": f"Блок {i}", "text": "x"} for i in range(30)],
+			warn=warnings.append,
+		)
+		self.assertIn("а" * (DESCRIPTION_MAX - 1) + "…", text)
+		self.assertNotIn("а" * DESCRIPTION_MAX, text)
+		self.assertIn("б" * (RULE_TITLE_MAX - 1) + "…:\n" + "в" * (RULE_TEXT_MAX - 1) + "…", text)
+		self.assertIn(f"Блок {RULES_MAX - 2}:", text)
+		self.assertNotIn(f"Блок {RULES_MAX - 1}:", text)
+		self.assertTrue(warnings)
+
+	def test_в_пределах_лимитов_без_предупреждений(self):
+		warnings = []
+		render(
+			{"description": "а" * DESCRIPTION_MAX},
+			[{"title": "Оплата", "text": "в" * RULE_TEXT_MAX}],
+			warn=warnings.append,
+		)
+		self.assertEqual(warnings, [])

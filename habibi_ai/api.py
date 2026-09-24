@@ -192,7 +192,9 @@ def tenant_context():
 	Дедлок и таймаут — наружу, как в features_hook."""
 	try:
 		doc = frappe.get_single("Business Profile")
-		return business_profile.render(doc.as_dict(), [r.as_dict() for r in doc.rules])
+		return business_profile.render(
+			doc.as_dict(), [r.as_dict() for r in doc.rules], warn=frappe.logger("habibi_ai").warning
+		)
 	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
 		raise
 	except Exception:

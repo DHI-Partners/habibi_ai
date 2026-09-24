@@ -82,6 +82,67 @@ class TestCabinetSettings(IntegrationTestCase):
 		rule = settings.get_profile()["rules"][0]
 		self.assertEqual((rule["hint"], rule["text"]), ("Сколько стоит?", "40 минут"))
 
+	def _preset_and_own(self):
+		doc = frappe.get_single("Business Profile")
+		doc.rules = []
+		doc.append("rules", {"title": "Доставка", "hint": "Сколько стоит?", "text": "40 минут"})
+		doc.append("rules", {"title": "Оплата", "hint": "Как платить?", "text": "Kaspi"})
+		doc.append("rules", {"title": "Парковка", "hint": "", "text": "Во дворе"})
+		doc.save()
+
+	def test_свой_блок_удаляется(self):
+		self._preset_and_own()
+		settings.save_profile(
+			{"rules": [{"title": "Доставка", "text": "40 минут"}, {"title": "Оплата", "text": "Kaspi"}]}
+		)
+		self.assertEqual([r["title"] for r in settings.get_profile()["rules"]], ["Доставка", "Оплата"])
+
+	def test_блок_пресета_не_удаляется_а_возвращается_пустым(self):
+		"""Подсказки пресета не теряются: пропавший из присланного блок пресета
+		возвращается на своё место с пустым текстом."""
+		self._preset_and_own()
+		settings.save_profile(
+			{"rules": [{"title": "Оплата", "text": "Kaspi"}, {"title": "Парковка", "text": "Во дворе"}]}
+		)
+		rules = settings.get_profile()["rules"]
+		self.assertEqual(
+			[(r["title"], r["hint"], r["text"]) for r in rules],
+			[
+				("Доставка", "Сколько стоит?", ""),
+				("Оплата", "Как платить?", "Kaspi"),
+				("Парковка", "", "Во дворе"),
+			],
+		)
+
+	def test_длинное_описание_отклоняется(self):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			settings.save_profile({"description": "а" * 1001})
+		self.assertIn("1000", str(ctx.exception))
+
+	def test_длинные_блоки_отклоняются(self):
+		for rules in (
+			[{"title": "Оплата", "text": "а" * 1501}],
+			[{"title": "а" * 81, "text": "x"}],
+			[{"title": f"Блок {i}", "text": "x"} for i in range(21)],
+		):
+			with self.subTest(rules=len(rules)), self.assertRaises(frappe.ValidationError):
+				settings.save_profile({"rules": rules})
+
+	def test_на_пределе_сохраняется(self):
+		doc = frappe.get_single("Business Profile")
+		doc.rules = []
+		doc.save()
+		settings.save_profile(
+			{
+				"description": "а" * 1000,
+				"rules": [{"title": "б" * 80, "text": "в" * 1500}]
+				+ [{"title": f"Блок {i}", "text": "x"} for i in range(19)],
+			}
+		)
+		profile = settings.get_profile()
+		self.assertEqual(len(profile["description"]), 1000)
+		self.assertEqual(len(profile["rules"]), 20)
+
 	def test_лишние_поля_профиля_отбрасываются(self):
 		settings.save_profile({"business_name": "Habibi", "owner": "evil@x"})
 		self.assertNotEqual(frappe.db.get_value("Business Profile", "Business Profile", "owner"), "evil@x")

@@ -10,6 +10,8 @@ import frappe
 from frappe import _
 from frappe.utils import get_time
 
+from habibi_ai import profile
+
 PROFILE_FIELDS = ("business_name", "business_kind", "address", "phone", "description", "tone")
 SLOT_FIELDS = ("weekday", "kind", "opens", "closes")
 EXCEPTION_FIELDS = ("date", "closed", "opens", "closes", "note")
@@ -99,22 +101,58 @@ def get_profile():
 	}
 
 
+def _check_length(value, limit, message):
+	"""Лишнее не обрезаем молча: владелец должен знать, что бот увидит не всё."""
+	if len(value or "") > limit:
+		frappe.throw(message)
+
+
+def _profile_rules(current, sent):
+	"""Своих блоков (без подсказки) — ровно присланные; блоки пресета (с
+	подсказкой) не удаляются: пропавший из присланного возвращается на своё
+	место с пустым текстом, иначе подсказка пресета пропала бы навсегда.
+
+	Подсказки берём из документа, не от клиента: владелец их не правит."""
+	hints = {r.title: r.hint for r in current if r.hint}
+	result = []
+	for r in sent:
+		title = (r.get("title") or "").strip()
+		if title:
+			result.append({"title": title, "hint": hints.get(title), "text": r.get("text") or ""})
+	kept = {r["title"] for r in result}
+	for i, r in enumerate(current):
+		if r.hint and r.title not in kept:
+			result.insert(min(i, len(result)), {"title": r.title, "hint": r.hint, "text": ""})
+	return result
+
+
 @frappe.whitelist(methods=["POST"])
 def save_profile(values):
 	"""Подсказки правил — из пресета, владелец их не правит: сохраняем свои."""
 	values = frappe.parse_json(values)
 	doc = frappe.get_single("Business Profile")
 	doc.check_permission("write")
+	limit = profile.DESCRIPTION_MAX
+	_check_length(
+		values.get("description"), limit, _("«Коротко о вас» — не длиннее {0} символов").format(limit)
+	)
 	for f in PROFILE_FIELDS:
 		if f in values:
 			doc.set(f, values[f])
 	if "rules" in values:
-		hints = {r.title: r.hint for r in doc.rules}
+		rules = _profile_rules(doc.rules, values["rules"] or [])
+		if len(rules) > profile.RULES_MAX:
+			frappe.throw(_("Блоков — не больше {0}: удалите лишние").format(profile.RULES_MAX))
+		for r in rules:
+			limit = profile.RULE_TITLE_MAX
+			_check_length(r["title"], limit, _("Название блока — не длиннее {0} символов").format(limit))
+			limit = profile.RULE_TEXT_MAX
+			_check_length(
+				r["text"], limit, _("Блок «{0}» — не длиннее {1} символов").format(r["title"][:40], limit)
+			)
 		doc.rules = []
-		for r in values["rules"]:
-			title = (r.get("title") or "").strip()
-			if title:
-				doc.append("rules", {"title": title, "hint": hints.get(title), "text": r.get("text") or ""})
+		for r in rules:
+			doc.append("rules", r)
 	doc.save()
 	return get_profile()
 
