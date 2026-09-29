@@ -9,13 +9,14 @@ import unittest
 from unittest.mock import Mock
 
 from habibi_ai import loop
+from habibi_ai.agent.commitments import Commitment
 
 
 def _step(*results):
 	return Mock(side_effect=list(results))
 
 
-def _run(step, execute=None, offered=("get_menu",), max_loop=5, debug=False):
+def _run(step, execute=None, offered=("get_menu",), max_loop=5, debug=False, **extra):
 	return loop.run(
 		step,
 		"привет",
@@ -24,6 +25,7 @@ def _run(step, execute=None, offered=("get_menu",), max_loop=5, debug=False):
 		execute=execute or Mock(return_value="результат"),
 		max_loop=max_loop,
 		debug=debug,
+		**extra,
 	)
 
 
@@ -121,3 +123,155 @@ class TestЛимит(unittest.TestCase):
 		for bad in (None, 0, -1, "5", 2.5, True, Mock()):
 			with self.subTest(bad=bad):
 				self.assertEqual(loop.resolve_max_loop(bad), loop.DEFAULT_MAX_LOOP)
+
+
+def _claimed_created(turn):
+	# Подтверждает успешный результат вызова, а не сам вызов: довыполнение
+	# стража кладёт в turn такой же tool_use, и отказ движка не должен
+	# считаться подтверждением.
+	created = {e["id"] for e in turn if e["type"] == "tool_use" and e["name"] == "create_order"}
+	return any(e["type"] == "tool_result" and e["id"] in created and "создан" in e["content"] for e in turn)
+
+
+ORDER = Commitment(
+	name="order",
+	claims=lambda text: "оформлен" in text,
+	confirmed=lambda text, turn, known: _claimed_created(turn),
+	fulfil="create_order",
+	recap=lambda turn: "РЕКАП",
+)
+OFFERED = ("get_menu", "create_order")
+
+
+class TestСтраж(unittest.TestCase):
+	def _run(self, step, **extra):
+		extra.setdefault("commitments", (ORDER,))
+		extra.setdefault("offered", OFFERED)
+		return _run(step, **extra)
+
+	def test_подтверждённое_утверждение_уходит_как_есть(self):
+		step = _step(
+			{"type": "tool_use", "id": "t1", "name": "create_order", "input": {}},
+			{"type": "text", "content": "Заказ оформлен"},
+		)
+		execute = Mock(return_value="Заказ N создан")
+		result = self._run(step, execute=execute)
+		self.assertEqual(result["response"], "Заказ оформлен")
+		execute.assert_called_once_with("create_order", {})
+
+	def test_утверждение_без_вызова_довыполняется(self):
+		step = _step(
+			{"type": "text", "content": "Заказ оформлен: SAL-ORD-1"},
+			{"type": "text", "content": "Заказ SAL-ORD-2 создан"},
+		)
+		execute = Mock(return_value="Заказ SAL-ORD-2 создан")
+		events = []
+		result = self._run(step, execute=execute, on_event=events.append)
+		execute.assert_called_once_with("create_order", {})
+		self.assertEqual(result["response"], "Заказ SAL-ORD-2 создан")
+		turn = step.call_args_list[1].kwargs["turn"]
+		self.assertEqual(turn[0], {"type": "tool_use", "id": "guard-1", "name": "create_order", "input": {}})
+		self.assertEqual(turn[1], {"type": "tool_result", "id": "guard-1", "content": "Заказ SAL-ORD-2 создан"})
+		self.assertEqual([e["kind"] for e in events], ["violated", "fulfilled"])
+		self.assertEqual(events[0]["commitment"], "order")
+
+	def test_ложь_текст_модели_в_ответ_не_попадает(self):
+		step = _step(
+			{"type": "text", "content": "Заказ оформлен: SAL-ORD-1"},
+			{"type": "text", "content": "Заказ создан по факту"},
+		)
+		result = self._run(step)
+		self.assertNotIn("SAL-ORD-1", result["response"])
+
+	def test_повторная_ложь_заменяется_пересказом(self):
+		step = _step(
+			{"type": "text", "content": "Заказ оформлен"},
+			{"type": "text", "content": "Заказ оформлен, честно"},
+		)
+		execute = Mock(return_value="отказ")
+		result = self._run(step, execute=execute)
+		self.assertEqual(result["response"], "РЕКАП")
+		execute.assert_called_once()
+
+	def test_довыполнение_только_если_инструмент_предложен(self):
+		step = _step({"type": "text", "content": "Заказ оформлен"})
+		execute = Mock()
+		events = []
+		result = self._run(step, execute=execute, offered=("get_menu",), on_event=events.append)
+		execute.assert_not_called()
+		self.assertEqual(result["response"], "Заказ оформлен")
+		self.assertEqual([e["kind"] for e in events], ["violated"])
+
+	def test_на_последнем_витке_сразу_пересказ_без_вызова_движка(self):
+		step = _step({"type": "text", "content": "Заказ оформлен"})
+		execute = Mock(return_value="Заказ N создан")
+		result = self._run(step, execute=execute, max_loop=1)
+		self.assertEqual(result["response"], "РЕКАП")
+		execute.assert_called_once()
+		self.assertEqual(step.call_count, 1)
+
+	def test_виток_довыполнения_тратит_лимит(self):
+		step = _step(
+			{"type": "text", "content": "Заказ оформлен"},
+			{"type": "text", "content": "Заказ оформлен"},
+		)
+		result = self._run(step, max_loop=2)
+		self.assertEqual(result["response"], "РЕКАП")
+		self.assertEqual(step.call_count, 2)
+
+	def test_сбой_проверки_не_роняет_ход(self):
+		broken = Commitment(
+			name="broken",
+			claims=Mock(side_effect=RuntimeError("сбой")),
+			confirmed=lambda *a: True,
+			fulfil="create_order",
+			recap=lambda turn: "",
+		)
+		events = []
+		result = self._run(_step({"type": "text", "content": "привет"}), commitments=(broken,), on_event=events.append)
+		self.assertEqual(result["response"], "привет")
+		self.assertEqual([e["kind"] for e in events], ["guard_error"])
+
+	def test_сбой_колбэка_не_роняет_ход(self):
+		step = _step({"type": "text", "content": "Заказ оформлен"}, {"type": "text", "content": "ок"})
+		result = self._run(step, on_event=Mock(side_effect=RuntimeError("сбой")))
+		self.assertEqual(result["response"], "ок")
+
+	def test_known_доезжает_до_проверки(self):
+		seen = []
+		spy = Commitment(
+			name="spy",
+			claims=lambda text: True,
+			confirmed=lambda text, turn, known: seen.append(known) or True,
+			fulfil="create_order",
+			recap=lambda turn: "",
+		)
+		self._run(_step({"type": "text", "content": "x"}), commitments=(spy,), known=frozenset({"SAL-ORD-9"}))
+		self.assertEqual(seen, [frozenset({"SAL-ORD-9"})])
+
+	def test_без_обязательств_поведение_прежнее(self):
+		result = _run(_step({"type": "text", "content": "Заказ оформлен"}))
+		self.assertEqual(result, {"response": "Заказ оформлен", "debug": []})
+
+	def test_нарушение_видно_в_трассировке(self):
+		step = _step({"type": "text", "content": "Заказ оформлен"}, {"type": "text", "content": "ок"})
+		result = self._run(step, debug=True)
+		violations = [s for s in result["debug"] if s["step"] == "commitment_violation"]
+		self.assertEqual(violations[0]["data"]["name"], "order")
+
+
+class TestНесохранённыйОтвет(unittest.TestCase):
+	def test_флаг_движка_доезжает_до_результата(self):
+		result = _run(_step({"type": "text", "content": "ок", "persisted": False}))
+		self.assertTrue(result["unpersisted"])
+
+	def test_без_флага_ключа_нет(self):
+		self.assertNotIn("unpersisted", _run(_step({"type": "text", "content": "ок"})))
+
+	def test_флаг_относится_к_последнему_текстовому_шагу(self):
+		step = _step(
+			{"type": "text", "content": "Заказ оформлен", "persisted": False},
+			{"type": "text", "content": "Заказ создан", "persisted": False},
+		)
+		result = _run(step, commitments=(ORDER,), offered=OFFERED)
+		self.assertTrue(result["unpersisted"])

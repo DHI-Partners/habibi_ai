@@ -7,6 +7,10 @@
 
 Инструменты исполняет вызывающий, а не движок: они работают под правами
 тенанта, и учётные данные тенантов движку не нужны и не передаются.
+
+Страж обязательств живёт здесь, потому что только цикл видит и текст модели, и
+результаты инструментов хода. Про предметную область он ничего не знает:
+обязательства приходят снаружи.
 """
 
 DEFAULT_MAX_LOOP = 8
@@ -52,14 +56,77 @@ def resolve_max_loop(configured, default=DEFAULT_MAX_LOOP):
 	return default
 
 
-def run(step, message, *, offered, definitions, execute, max_loop, debug=False):
+FALLBACK = "Не удалось выполнить действие. Передаю ваш вопрос оператору."
+
+
+def _emit(on_event, kind, name, detail=""):
+	"""Сообщает о событии стража. Сбой колбэка не должен стоить клиенту ответа."""
+	if on_event is None:
+		return
+	try:
+		on_event({"kind": kind, "commitment": name, "detail": str(detail)[:200]})
+	except Exception:
+		pass
+
+
+def _violated(commitments, text, turn, known, on_event):
+	"""Первое обязательство, которое текст нарушает, или None.
+
+	Сбой самой проверки — не повод молчать или ронять ход: страж добавляет
+	надёжности и не должен сам её отнимать.
+	"""
+	for commitment in commitments:
+		try:
+			if commitment.claims(text) and not commitment.confirmed(text, turn, known):
+				return commitment
+		except Exception as e:
+			_emit(on_event, "guard_error", commitment.name, repr(e))
+	return None
+
+
+def _recap(commitment, turn):
+	try:
+		return commitment.recap(turn) or FALLBACK
+	except Exception:
+		return FALLBACK
+
+
+def _answer(text, debug, step_result):
+	answer = {"response": text, "debug": debug}
+	# Движок не сохранил ответ (persist_answer: false) — сохранить итоговый
+	# текст должен вызывающий. Ключ только тогда: старый движок пишет сам, и
+	# вызывающий не должен дублировать реплику.
+	if step_result.get("persisted") is False:
+		answer["unpersisted"] = True
+	return answer
+
+
+def run(
+	step,
+	message,
+	*,
+	offered,
+	definitions,
+	execute,
+	max_loop,
+	debug=False,
+	commitments=(),
+	known=frozenset(),
+	on_event=None,
+):
 	"""Ведёт ход до текстового ответа.
 
 	step(message, *, turn, tools, debug) — один шаг движка (EngineClient.step
 	с уже привязанными chat_id и bot_id); execute(name, args) — исполнение
 	инструмента, всегда строка. offered — имена, которые предложены модели на
 	этом ходу: исполняется только имя из этого списка.
+
+	commitments — обязательства (name, claims, confirmed, fulfil, recap), known —
+	номера, известные из предыдущих ходов, on_event(dict) — журнал событий стража.
+	Текст, утверждающий несовершённое действие, клиенту не уходит: действие
+	довыполняет код, а ответ строится по его результату.
 	"""
+	fulfilled = set()
 	turn = []
 	collected_debug = []
 
@@ -76,7 +143,38 @@ def run(step, message, *, offered, definitions, execute, max_loop, debug=False):
 			collected_debug.extend(result["debug"])
 
 		if result.get("type") == "text":
-			return {"response": result.get("content", ""), "debug": collected_debug}
+			text = result.get("content", "")
+			violated = _violated(commitments, text, turn, known, on_event)
+			if violated is None:
+				return _answer(text, collected_debug, result)
+
+			_emit(on_event, "violated", violated.name, text)
+			if debug:
+				collected_debug.append(
+					{"step": "commitment_violation", "data": {"name": violated.name, "text": text[:200]}}
+				)
+			if violated.name in fulfilled:
+				# Довыполнили, а модель снова утверждает своё: клиенту уходит
+				# то, что собрал код по результату инструмента, не её текст
+				return _answer(_recap(violated, turn), collected_debug, result)
+			if violated.fulfil not in offered:
+				return _answer(text, collected_debug, result)
+
+			# Согласие клиента получено, действие не совершено — совершает код,
+			# а модель на следующем витке пересказывает настоящий результат.
+			# Пара в turn — как у обычного вызова, без raw: формат поддержан
+			# обоими провайдерами.
+			fulfilled.add(violated.name)
+			guard_id = f"guard-{len(fulfilled)}"
+			turn.append({"type": "tool_use", "id": guard_id, "name": violated.fulfil, "input": {}})
+			content = execute(violated.fulfil, {})
+			turn.append({"type": "tool_result", "id": guard_id, "content": content})
+			_emit(on_event, "fulfilled", violated.name, content)
+			if iteration == max_loop:
+				# Виток на пересказ уже некому потратить: вместо LoopExhausted
+				# после совершённого действия клиент получает пересказ кода
+				return _answer(_recap(violated, turn), collected_debug, result)
+			continue
 
 		if result.get("type") != "tool_use" or not result.get("id") or not result.get("name"):
 			raise BadStep(result)
