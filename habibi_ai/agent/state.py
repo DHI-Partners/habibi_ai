@@ -33,6 +33,7 @@ def _stages(modules, events, now):
 
 def _shown(events, modules, now):
 	"""Последние события окна плюс закреплённые модулями — по возрастанию."""
+	# now и occurred_at — оба naive (datetime из frappe); с aware-значениями вычитание упадёт
 	fresh = [e for e in events if now - e["occurred_at"] <= WINDOW][-WINDOW_EVENTS:]
 	pinned = []
 	for module in modules:

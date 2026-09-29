@@ -31,6 +31,15 @@ class TestУтверждение(unittest.TestCase):
 			with self.subTest(text):
 				self.assertTrue(C.claims(text), text)
 
+	def test_далёкое_не_не_отменяет_утверждение(self):
+		for text in (
+			"Заказ на два бургера, не острых, оформлен",
+			"Заказ, который вы не видели, создан",
+			"Заказ принят, не волнуйтесь, оформлен",
+		):
+			with self.subTest(text):
+				self.assertTrue(C.claims(text), text)
+
 	def test_отрицание_не_утверждение(self):
 		for text in (
 			"Заказ не создан.",
