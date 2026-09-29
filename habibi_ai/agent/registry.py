@@ -12,6 +12,15 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class Capability:
+	"""tool — имя инструмента; available(events, now) -> bool — открыт ли он клиенту
+	при таком журнале. Решает код по фактам: модель просить открыть не может."""
+
+	tool: str
+	available: Callable
+
+
+@dataclass(frozen=True)
 class Stage:
 	"""Где клиент в ходе дел и куда его вести — подсказка модели, не принуждение."""
 
@@ -34,6 +43,7 @@ class Module:
 	commitments: tuple
 	pin: tuple
 	labels: dict = field(default_factory=dict)
+	capabilities: tuple = ()
 
 
 _MODULES = []
@@ -55,3 +65,23 @@ def tool_labels(modules):
 	for module in modules:
 		labels.update(module.labels)
 	return labels
+
+
+def blocked_tools(modules, events, now):
+	"""Инструменты, которые сейчас нельзя предлагать модели.
+
+	Закрыт только тот, что объявлен возможностью, и ни одна из возможностей
+	не доступна. Сбой условия считается «доступно»: нерабочая проверка не
+	должна лишать клиента инструмента.
+	"""
+	declared, allowed = set(), set()
+	for module in modules:
+		for capability in module.capabilities:
+			declared.add(capability.tool)
+			try:
+				opened = capability.available(events, now)
+			except Exception:
+				opened = True
+			if opened:
+				allowed.add(capability.tool)
+	return declared - allowed

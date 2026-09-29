@@ -60,6 +60,12 @@ class TestУтверждение(unittest.TestCase):
 
 
 class TestПодтверждение(unittest.TestCase):
+	def test_фраза_без_номера_на_стадии_заказа_это_ссылка_на_него(self):
+		self.assertTrue(C.confirmed("Заказ оформлен", [], frozenset({"stage:ordered"})))
+
+	def test_фраза_без_номера_на_стадии_расчёта_нужен_результат_хода(self):
+		self.assertFalse(C.confirmed("Заказ оформлен", [], frozenset({"stage:quoted"})))
+
 	def test_номер_из_результата_этого_хода_подтверждён(self):
 		self.assertTrue(C.confirmed(f"Заказ {N1} создан", _turn(CREATED), frozenset()))
 

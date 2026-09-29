@@ -5,7 +5,7 @@ from datetime import datetime
 
 from habibi_ai.agent import registry
 from habibi_ai.agent.commitments import Commitment, results_of
-from habibi_ai.agent.registry import Module, Stage
+from habibi_ai.agent.registry import Capability, Module, Stage
 
 NUMBER = re.compile(r"SAL-ORD-\d{4}-\d+")
 # «Заказ … оформлен/создан». Группа between — текст между «заказ» и глаголом:
@@ -39,8 +39,9 @@ def _confirmed(text, turn, known):
 	if numbers:
 		# Номер либо создан в этом ходе, либо есть в журнале клиента; выдуманный не проходит
 		return numbers <= (created | set(known))
-	# Фраза без номера: ссылаться не на что, нужен результат этого хода
-	return bool(created)
+	# Фраза без номера: результат этого хода — или ссылка на уже существующий
+	# заказ, когда он последнее событие (стадия ordered) и открытого расчёта нет
+	return bool(created) or "stage:ordered" in known
 
 
 def _recap(turn):
@@ -115,5 +116,6 @@ MODULE = registry.register(
 		commitments=(ORDER_COMMITMENT,),
 		pin=("quote_created", "quote_delivered", "order_created"),
 		labels={"quote_order": "расчёт", "create_order": "заказ"},
+		capabilities=(Capability("create_order", lambda events, now: stage(events, now).name == "quoted"),),
 	)
 )

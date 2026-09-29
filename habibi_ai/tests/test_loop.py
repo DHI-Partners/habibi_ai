@@ -208,13 +208,14 @@ class TestСтраж(unittest.TestCase):
 		self.assertEqual(result["response"], "РЕКАП")
 		execute.assert_called_once()
 
-	def test_довыполнение_только_если_инструмент_предложен(self):
+	def test_инструмент_довыполнения_не_предложен_клиенту_пересказ_кода(self):
+		# Инструмент недоступен по стадии: действия не будет, и ложь наружу не выходит
 		step = _step({"type": "text", "content": "Заказ оформлен"})
 		execute = Mock()
 		events = []
 		result = self._run(step, execute=execute, offered=("get_menu",), on_event=events.append)
 		execute.assert_not_called()
-		self.assertEqual(result["response"], "Заказ оформлен")
+		self.assertEqual(result["response"], "РЕКАП")
 		self.assertEqual([e["kind"] for e in events], ["violated"])
 
 	def test_на_последнем_витке_сразу_пересказ_без_вызова_движка(self):

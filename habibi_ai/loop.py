@@ -165,7 +165,9 @@ def run(
 				# то, что собрал код по результату инструмента, не её текст
 				return _answer(_recap(violated, turn), collected_debug, result, used)
 			if violated.fulfil not in offered:
-				return _answer(text, collected_debug, result, used)
+				# Инструмент недоступен (стадия не та): действия не будет, а
+				# ложное утверждение наружу выходить не должно
+				return _answer(_recap(violated, turn), collected_debug, result, used)
 
 			# Согласие клиента получено, действие не совершено — совершает код,
 			# а модель на следующем витке пересказывает настоящий результат.

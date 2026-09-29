@@ -3,7 +3,8 @@
 import unittest
 from datetime import datetime, timedelta
 
-from habibi_ai.agent import orders, state
+from habibi_ai.agent import orders, registry, state
+from habibi_ai.agent.registry import Capability, Module
 
 NOW = datetime(2026, 9, 29, 12, 0)
 
@@ -113,3 +114,64 @@ class TestПроекция(unittest.TestCase):
 		broken = Module(name="b", feature=None, stage=lambda e, n: 1 / 0, commitments=(), pin=())
 		text = state.render([ev("x", 1, summary="факт")], [broken, orders.MODULE], NOW)
 		self.assertIn("факт", text)
+
+
+class TestВозможности(unittest.TestCase):
+	def _blocked(self, events):
+		return registry.blocked_tools([orders.MODULE], events, NOW)
+
+	def test_создание_закрыто_пока_нет_расчёта(self):
+		self.assertEqual(self._blocked([]), {"create_order"})
+
+	def test_создание_открыто_когда_расчёт_зачитан(self):
+		self.assertEqual(self._blocked([quote(5), ev("quote_delivered", 4, "AIQ-1")]), set())
+
+	def test_закрыто_если_расчёт_не_дошёл_до_клиента(self):
+		self.assertEqual(self._blocked([quote(5)]), {"create_order"})
+
+	def test_закрыто_если_расчёт_просрочен(self):
+		events = [quote(60, expires_in=30), ev("quote_delivered", 59, "AIQ-1")]
+		self.assertEqual(self._blocked(events), {"create_order"})
+
+	def test_закрыто_если_заказ_уже_создан(self):
+		events = [quote(9), ev("quote_delivered", 8, "AIQ-1"), ev("order_created", 3, "SAL-ORD-2026-00026")]
+		self.assertEqual(self._blocked(events), {"create_order"})
+
+	def test_сбой_условия_не_закрывает_возможность(self):
+		broken = Module(
+			name="b",
+			feature=None,
+			stage=None,
+			commitments=(),
+			pin=(),
+			capabilities=(Capability("x", lambda events, now: 1 / 0),),
+		)
+		self.assertEqual(registry.blocked_tools([broken], [], NOW), set())
+
+	def test_достаточно_одного_модуля_с_доступом(self):
+		closed = Module(
+			name="a",
+			feature=None,
+			stage=None,
+			commitments=(),
+			pin=(),
+			capabilities=(Capability("x", lambda e, n: False),),
+		)
+		opened = Module(
+			name="b",
+			feature=None,
+			stage=None,
+			commitments=(),
+			pin=(),
+			capabilities=(Capability("x", lambda e, n: True),),
+		)
+		self.assertEqual(registry.blocked_tools([closed, opened], [], NOW), set())
+
+	def test_инструмент_без_объявленной_возможности_не_закрывается(self):
+		self.assertNotIn("get_menu", self._blocked([]))
+
+
+class TestФактыСтадий(unittest.TestCase):
+	def test_стадия_заказа_в_фактах(self):
+		facts = state.stage_names([ev("order_created", 1, "SAL-ORD-2026-00001")], [orders.MODULE], NOW)
+		self.assertEqual(facts, frozenset({"stage:ordered"}))

@@ -12,8 +12,9 @@ from unittest.mock import Mock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
+from frappe.utils import add_to_date, now_datetime
 
-from habibi_ai import api
+from habibi_ai import api, events
 
 
 class TestГейтТрассировки(unittest.TestCase):
@@ -321,7 +322,8 @@ class TestЦиклИнструментов(unittest.TestCase):
 				api.send_message(1, "привет")
 		sent = client.step.call_args.kwargs["tools"]
 		self.assertTrue(all("run" not in d for d in sent))
-		self.assertEqual({d["name"] for d in sent}, set(api._tool_names()))
+		# Журнал пуст — расчёта нет — создание закрыто стадией
+		self.assertEqual({d["name"] for d in sent}, set(api._tool_names()) - {"create_order"})
 
 
 class TestПрофильИВозможности(IntegrationTestCase):
@@ -408,6 +410,43 @@ class TestПрофильИВозможности(IntegrationTestCase):
 				self.assertFalse(client.step.call_args.kwargs["tenant_context"])
 				log_error.assert_called_once()
 
+	def _offered(self, client):
+		return [t["name"] for t in client.step.call_args.kwargs["tools"]]
+
+	def test_создание_заказа_не_предлагается_без_показанного_расчёта(self):
+		client = self._client_answering("ok")
+		api.run_turn(client, 5, "привет")
+		self.assertNotIn("create_order", self._offered(client))
+		self.assertIn("quote_order", self._offered(client))
+
+	def test_создание_заказа_предлагается_после_показа_расчёта(self):
+		events.record(
+			"quote_created",
+			"Расчёт",
+			context={"engine_chat_id": 5},
+			ref=("AI Order Quote", "AIQ-T"),
+			data={"expires_on": add_to_date(now_datetime(), minutes=20)},
+		)
+		events.record(
+			"quote_delivered",
+			"Расчёт зачитан",
+			actor="System",
+			context={"engine_chat_id": 5},
+			ref=("AI Order Quote", "AIQ-T"),
+		)
+		client = self._client_answering("ok")
+		api.run_turn(client, 5, "да")
+		self.assertIn("create_order", self._offered(client))
+
+	def test_сбой_журнала_не_закрывает_инструменты(self):
+		client = self._client_answering("ok")
+		with (
+			patch("habibi_ai.api.events.recent", side_effect=RuntimeError("сбой")),
+			patch("habibi_ai.api.frappe.log_error"),
+		):
+			api.run_turn(client, 5, "привет")
+		self.assertIn("create_order", self._offered(client))
+
 	def test_сбой_флагов_предлагает_инструменты_как_раньше(self):
 		"""Флаги не прочитались — все возможности включены, как до флагов."""
 		client = self._client_answering("ok")
@@ -417,7 +456,8 @@ class TestПрофильИВозможности(IntegrationTestCase):
 		):
 			api.run_turn(client, 5, "привет")
 		offered = {t["name"] for t in client.step.call_args.kwargs["tools"]}
-		self.assertEqual(offered, set(api._tool_names()))
+		# Флаги не прочитались — включено всё, кроме того, что закрыто стадией
+		self.assertEqual(offered, set(api._tool_names()) - {"create_order"})
 		log_error.assert_called_once()
 
 	@staticmethod

@@ -11,6 +11,7 @@ import frappe
 
 from habibi_ai import events, features, loop, tools
 from habibi_ai.agent import active as active_modules
+from habibi_ai.agent import blocked_tools
 from habibi_ai.agent import tool_labels
 from habibi_ai.agent import state as agent_state
 from habibi_ai import profile as business_profile
@@ -254,11 +255,16 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 	# выглядела бы как «клиент новый»), а ход идёт как раньше
 	history = _safely(lambda: events.recent(context), None, "ИИ: журнал событий")
 	session_text = ""
+	facts = frozenset()
 	if history is not None:
-		session_text = _safely(
-			lambda: agent_state.render(history, modules, frappe.utils.now_datetime()), "", "ИИ: ход дел"
-		)
-	known = frozenset(e["ref_name"] for e in (history or []) if e.get("ref_name"))
+		now = frappe.utils.now_datetime()
+		session_text = _safely(lambda: agent_state.render(history, modules, now), "", "ИИ: ход дел")
+		facts = _safely(lambda: agent_state.stage_names(history, modules, now), frozenset(), "ИИ: ход дел")
+		# Инструменты по стадии: открывает код по журналу, а не модель. Журнал не
+		# прочитался — ничего не закрываем: сбой не должен лишать клиента заказа
+		blocked = _safely(lambda: blocked_tools(modules, history, now), set(), "ИИ: инструменты по стадии")
+		offered = [name for name in offered if name not in blocked]
+	known = frozenset(e["ref_name"] for e in (history or []) if e.get("ref_name")) | facts
 	if channel_chat is None:
 		# Консоль кабинета: у неё нет Telegram Message, реплику клиента пишем здесь.
 		# Канал пишет её сам хуком — иначе она была бы записана дважды.

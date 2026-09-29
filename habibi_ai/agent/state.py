@@ -60,3 +60,12 @@ def render(events, modules, now):
 		lines.append("События:")
 		lines.extend(f"- {e['occurred_at']:%d.%m %H:%M} — {e['summary']}" for e in shown)
 	return "\n".join(lines)
+
+
+def stage_names(events, modules, now):
+	"""Активные стадии как факты для стража: «stage:ordered».
+
+	Страж по ним отличает ссылку на существующий заказ («заказ оформлен» на
+	стадии ordered) от утверждения, что заказ создан прямо сейчас.
+	"""
+	return frozenset(f"stage:{stage.name}" for stage in _stages(modules, events, now))
