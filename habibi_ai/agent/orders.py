@@ -1,9 +1,11 @@
-"""Модуль «заказы» агента: обязательство «заказ оформлен» и (задача 7) стадии."""
+"""Модуль «заказы» агента: обязательство «заказ оформлен» и стадии заказа."""
 
 import re
+from datetime import datetime
 
 from habibi_ai.agent import registry
 from habibi_ai.agent.commitments import Commitment, results_of
+from habibi_ai.agent.registry import Module, Stage
 
 NUMBER = re.compile(r"SAL-ORD-\d{4}-\d+")
 # «Заказ … оформлен/создан», но не «не создан»: честный отказ модели
@@ -49,4 +51,61 @@ ORDER_COMMITMENT = Commitment(
 	confirmed=_confirmed,
 	fulfil="create_order",
 	recap=_recap,
+)
+
+
+def _when(value):
+	"""expires_on из журнала: datetime или ISO-строка из JSON."""
+	if isinstance(value, datetime):
+		return value
+	try:
+		return datetime.fromisoformat(str(value))
+	except ValueError:
+		return None
+
+
+def stage(events, now):
+	"""Где клиент в заказе. Подсказка модели; принуждает не она, а страж."""
+	quotes = [e for e in events if e["event_type"] == "quote_created"]
+	created = [e for e in events if e["event_type"] == "order_created"]
+	last_quote = quotes[-1] if quotes else None
+	last_order = created[-1] if created else None
+
+	if last_order and (not last_quote or last_order["occurred_at"] >= last_quote["occurred_at"]):
+		return Stage(
+			"ordered",
+			f"заказ {last_order['ref_name']} создан, ждёт подтверждения оператора",
+			"сообщить номер и что оператор подтвердит; про статус говорить только то, что есть в событиях, "
+			"иначе направить к оператору",
+		)
+	if last_quote:
+		delivered = any(
+			e["event_type"] == "quote_delivered" and e.get("ref_name") == last_quote.get("ref_name")
+			for e in events
+		)
+		if not delivered:
+			return Stage(
+				"quote_pending",
+				"расчёт создан, но до клиента не дошёл",
+				"зачитать расчёт клиенту заново",
+			)
+		expires = _when((last_quote.get("data") or {}).get("expires_on"))
+		if expires and now > expires:
+			return Stage("quote_expired", "расчёт зачитан, но устарел", "предложить пересчитать заказ")
+		return Stage(
+			"quoted",
+			"расчёт зачитан, ждём ответа клиента",
+			"«да» — оформить заказ; правка состава — новый расчёт; не оформлять без явного согласия",
+		)
+	return Stage("new", "новый разговор или заказа ещё нет", "выяснить, что хочет клиент")
+
+
+MODULE = registry.register(
+	Module(
+		name="orders",
+		feature="orders",
+		stage=stage,
+		commitments=(ORDER_COMMITMENT,),
+		pin=("quote_created", "quote_delivered", "order_created"),
+	)
 )
