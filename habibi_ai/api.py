@@ -9,7 +9,9 @@ import uuid
 
 import frappe
 
-from habibi_ai import features, loop, tools
+from habibi_ai import events, features, loop, tools
+from habibi_ai.agent import active as active_modules
+from habibi_ai.agent import state as agent_state
 from habibi_ai import profile as business_profile
 from habibi_ai.tools.orders import mark_answered
 from habibi_ai.engine import BotNotFound, ChatNotFound, EngineClient, EngineError
@@ -202,6 +204,18 @@ def tenant_context():
 		return ""
 
 
+def _safely(fn, default, title):
+	"""Добавка к ходу (журнал, проекция): сбой не должен стоить клиенту ответа.
+	Дедлок и таймаут — наружу, как в features_hook."""
+	try:
+		return fn()
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
+	except Exception:
+		frappe.log_error(title=title, message=frappe.get_traceback())
+		return default
+
+
 def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=None, message_at=None):
 	"""Один ход агента — общий для браузера и каналов.
 
@@ -223,7 +237,9 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 	и одно обращение к Business Profile надёжнее, чем по разу на виток.
 	"""
 	max_loop = loop.resolve_max_loop(client.get_max_loop(chat_id, bot_id), MAX_LOOP)
-	offered = features.offered(_tool_names(), features_hook())
+	enabled = features_hook()
+	offered = features.offered(_tool_names(), enabled)
+	modules = active_modules(enabled)
 	context_text = tenant_context()
 	context = {
 		"turn_id": uuid.uuid4().hex,
@@ -231,15 +247,42 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 		"channel_chat": channel_chat,
 		"message_at": message_at or frappe.utils.now_datetime(),
 	}
+	# Журнал читается один раз за ход: «ход дел» общий для всех витков, а
+	# известные номера нужны стражу, чтобы отличить прошлый заказ от выдуманного.
+	# None — журнал не прочитался: без него «ход дел» не строим (пустая история
+	# выглядела бы как «клиент новый»), а ход идёт как раньше
+	history = _safely(lambda: events.recent(context), None, "ИИ: журнал событий")
+	session_text = ""
+	if history is not None:
+		session_text = _safely(
+			lambda: agent_state.render(history, modules, frappe.utils.now_datetime()), "", "ИИ: ход дел"
+		)
+	known = frozenset(e["ref_name"] for e in (history or []) if e.get("ref_name"))
 	result = loop.run(
-		lambda text, **kwargs: client.step(chat_id, text, bot_id, tenant_context=context_text, **kwargs),
+		lambda text, **kwargs: client.step(
+			chat_id,
+			text,
+			bot_id,
+			tenant_context=context_text,
+			session_context=session_text,
+			# Ответ в историю пишем мы: страж мог отбросить текст модели
+			persist_answer=False,
+			**kwargs,
+		),
 		message,
 		offered=offered,
 		definitions=tools.definitions(offered),
 		execute=lambda name, args: tools.execute(name, args, context),
 		max_loop=max_loop,
 		debug=debug,
+		commitments=tuple(c for m in modules for c in m.commitments),
+		known=known,
+		on_event=lambda event: events.record_guard(event, context),
 	)
+	# Движок не сохранил ответ — сохраняем тот, что реально уйдёт клиенту.
+	# Старый движок пишет сам и unpersisted не возвращает: дубля нет.
+	if result.pop("unpersisted", False):
+		client.add_messages(chat_id, [("assistant", result["response"])])
 	# Канал отметит расчёты хода отправленными, когда ответ реально уйдёт
 	result["turn_id"] = context["turn_id"]
 	return result

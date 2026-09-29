@@ -106,3 +106,26 @@ def recent(context, limit=100):
 			row["data"] = json.loads(row["data"])
 		row["data"] = row.get("data") or {}
 	return rows
+
+
+GUARD_EVENTS = {
+	"violated": ("commitment_violated", "Бот написал утверждение без действия ({name})"),
+	"fulfilled": ("commitment_fulfilled", "Действие выполнено стражем по согласию клиента ({name})"),
+}
+
+
+def record_guard(event, context):
+	"""Событие стража цикла → запись журнала. guard_error — только в Error Log:
+	это сбой механизма, а не что-то, что случилось с клиентом."""
+	spec = GUARD_EVENTS.get(event.get("kind"))
+	if spec is None:
+		frappe.log_error(title="ИИ: сбой стража", message=f"{event.get('commitment')}: {event.get('detail')}")
+		return None
+	event_type, template = spec
+	return record(
+		event_type,
+		template.format(name=event["commitment"]),
+		context=context,
+		actor="System",
+		data={"commitment": event["commitment"], "detail": event.get("detail")},
+	)

@@ -381,6 +381,64 @@ class TestПрофильИВозможности(IntegrationTestCase):
 		self.assertEqual(offered, set(api._tool_names()))
 		log_error.assert_called_once()
 
+	@staticmethod
+	def _enable_orders():
+		settings = frappe.get_single("Habibi AI Settings")
+		settings.feature_orders = 1
+		settings.save()
+
+	def test_ход_дел_и_отказ_от_сохранения_уходят_в_движок(self):
+		client = self._client_answering("ok")
+		api.run_turn(client, 5, "привет")
+		kwargs = client.step.call_args.kwargs
+		self.assertIn("Ход дел", kwargs["session_context"])
+		self.assertIs(kwargs["persist_answer"], False)
+
+	def test_несохранённый_ответ_дописывается_в_историю(self):
+		client = self._client_answering("ok")
+		client.step = Mock(return_value={"type": "text", "content": "ок", "persisted": False})
+		client.add_messages = Mock()
+		api.run_turn(client, 5, "привет")
+		client.add_messages.assert_called_once_with(5, [("assistant", "ок")])
+
+	def test_старый_движок_ответ_не_дублируется(self):
+		client = self._client_answering("ok")
+		client.add_messages = Mock()
+		api.run_turn(client, 5, "привет")
+		client.add_messages.assert_not_called()
+
+	def test_сбой_журнала_не_мешает_ответу(self):
+		client = self._client_answering("ok")
+		with (
+			patch("habibi_ai.api.events.recent", side_effect=RuntimeError("сбой")),
+			patch("habibi_ai.api.frappe.log_error") as log_error,
+		):
+			result = api.run_turn(client, 5, "привет")
+		self.assertEqual(result["response"], "ok")
+		self.assertFalse(client.step.call_args.kwargs["session_context"])
+		log_error.assert_called_once()
+
+	def test_сбой_проекции_не_мешает_ответу(self):
+		client = self._client_answering("ok")
+		with (
+			patch("habibi_ai.api.agent_state.render", side_effect=RuntimeError("сбой")),
+			patch("habibi_ai.api.frappe.log_error") as log_error,
+		):
+			result = api.run_turn(client, 5, "привет")
+		self.assertEqual(result["response"], "ok")
+		log_error.assert_called_once()
+
+	def test_выключенные_заказы_отключают_стража_и_ход_дел(self):
+		settings = frappe.get_single("Habibi AI Settings")
+		settings.feature_orders = 0
+		settings.save()
+		# Класс откатывается только целиком: соседним тестам заказы нужны включёнными
+		self.addCleanup(self._enable_orders)
+		client = self._client_answering("Заказ оформлен")
+		result = api.run_turn(client, 5, "привет")
+		self.assertEqual(result["response"], "Заказ оформлен")
+		self.assertFalse(client.step.call_args.kwargs["session_context"])
+
 	def test_дедлок_в_профиле_и_флагах_пробрасывается(self):
 		for error in (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
 			with self.subTest(error.__name__):

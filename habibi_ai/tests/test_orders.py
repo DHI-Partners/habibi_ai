@@ -435,3 +435,67 @@ class TestСобытия(OrderFixtures, IntegrationTestCase):
 		(event,) = self._events("order_refused")
 		self.assertEqual(event.summary, "Попытка оформить заказ отклонена")
 		self.assertIn("дождись", frappe.parse_json(event.data)["reason"])
+
+
+class TestСтражНаИнциденте(OrderFixtures, IntegrationTestCase):
+	"""28.09: клиент сказал «да», модель не вызвала create_order и написала
+	«Заказ оформлен: SAL-ORD-…» с выдуманным номером. Теперь заказ создаётся."""
+
+	def tearDown(self):
+		frappe.db.delete("AI Event", {"engine_chat_id": self.chat})
+		super().tearDown()
+
+	def _client(self, lie):
+		from unittest.mock import Mock
+
+		client = Mock()
+		client.get_max_loop = Mock(return_value=None)
+		client.add_messages = Mock()
+
+		def step(chat_id, text, bot_id=None, **kwargs):
+			turn = kwargs.get("turn") or []
+			if not turn:
+				return {"type": "text", "content": lie, "persisted": False}
+			# Второй виток: модель пересказывает то, что вернул инструмент
+			return {"type": "text", "content": turn[-1]["content"].splitlines()[0], "persisted": False}
+
+		client.step = Mock(side_effect=step)
+		return client
+
+	def test_ложное_оформлено_заканчивается_настоящим_заказом(self):
+		from habibi_ai import api
+
+		qid = quote_id(self._quote())
+		client = self._client("Заказ оформлен: **SAL-ORD-2099-00001**. Статус: draft.")
+		result = api.run_turn(client, self.chat, "да")
+
+		so_name = frappe.db.get_value("AI Order Quote", qid, "sales_order")
+		self.assertTrue(so_name, "заказ должен быть создан стражем")
+		self.assertIn(so_name, result["response"])
+		self.assertNotIn("SAL-ORD-2099-00001", result["response"])
+		client.add_messages.assert_called_once_with(self.chat, [("assistant", result["response"])])
+
+		kinds = {
+			e.event_type
+			for e in frappe.get_all("AI Event", filters={"engine_chat_id": self.chat}, fields=["event_type"])
+		}
+		self.assertTrue({"commitment_violated", "commitment_fulfilled", "order_created"} <= kinds)
+
+	def test_ссылка_на_настоящий_прежний_заказ_не_запускает_довыполнение(self):
+		from habibi_ai import api
+
+		self._quote()
+		self._create()
+		real = frappe.db.get_value("AI Order Quote", {"engine_chat_id": self.chat}, "sales_order")
+		self._quote(turn="t5")  # новый открытый расчёт
+		client = self._client(f"Ваш прошлый заказ {real} уже создан как черновик.")
+		api.run_turn(client, self.chat, "как мой заказ?")
+		# Открытый расчёт не оформлен: ссылка на настоящий заказ — не согласие
+		open_quote = frappe.get_all(
+			"AI Order Quote",
+			filters={"engine_chat_id": self.chat},
+			order_by="creation desc",
+			pluck="sales_order",
+			limit=1,
+		)[0]
+		self.assertFalse(open_quote)
