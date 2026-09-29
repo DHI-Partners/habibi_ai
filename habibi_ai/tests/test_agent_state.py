@@ -61,6 +61,14 @@ class TestСтадии(unittest.TestCase):
 		]
 		self.assertEqual(orders.stage(events, NOW).name, "quoted")
 
+	def test_старый_заказ_без_нового_расчёта_снова_новый_разговор(self):
+		events = [ev("order_created", 30 * 60, "SAL-ORD-2026-00026")]
+		self.assertEqual(orders.stage(events, NOW).name, "new")
+
+	def test_недавний_заказ_ещё_заказ(self):
+		events = [ev("order_created", 3 * 60, "SAL-ORD-2026-00026")]
+		self.assertEqual(orders.stage(events, NOW).name, "ordered")
+
 	def test_только_отказ_остаётся_новым_разговором(self):
 		self.assertEqual(orders.stage([ev("order_refused", 2)], NOW).name, "new")
 
@@ -123,6 +131,10 @@ class TestВозможности(unittest.TestCase):
 	def test_создание_закрыто_пока_нет_расчёта(self):
 		self.assertEqual(self._blocked([]), {"create_order"})
 
+	def test_старый_заказ_создание_остаётся_закрытым(self):
+		old_order = ev("order_created", 30 * 60, "SAL-ORD-2026-00026")
+		self.assertEqual(self._blocked([old_order]), {"create_order"})
+
 	def test_создание_открыто_когда_расчёт_зачитан(self):
 		self.assertEqual(self._blocked([quote(5), ev("quote_delivered", 4, "AIQ-1")]), set())
 
@@ -175,3 +187,4 @@ class TestФактыСтадий(unittest.TestCase):
 	def test_стадия_заказа_в_фактах(self):
 		facts = state.stage_names([ev("order_created", 1, "SAL-ORD-2026-00001")], [orders.MODULE], NOW)
 		self.assertEqual(facts, frozenset({"stage:ordered"}))
+

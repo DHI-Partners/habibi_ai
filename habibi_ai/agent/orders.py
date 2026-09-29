@@ -1,7 +1,7 @@
 """Модуль «заказы» агента: обязательство «заказ оформлен» и стадии заказа."""
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from habibi_ai.agent import registry
 from habibi_ai.agent.commitments import Commitment, results_of
@@ -20,7 +20,19 @@ NEGATION = re.compile(r"\bне\b(?:\s+[\w-]+){0,2}\s*$", re.IGNORECASE)
 # «Заказ … был удалён оператором» тоже его содержит.
 CREATED = re.compile(r"^Заказ (SAL-ORD-\d{4}-\d+) (?:уже )?создан")
 
-FALLBACK = "Не удалось оформить заказ. Передаю ваш вопрос оператору."
+# Не-утверждающая речь: будущее, условие, долженствование. «Напишите «да», и заказ будет
+# оформлен» обещает заказ, а не сообщает о нём; счесть это утверждением значило бы
+# заменить честный текст отказом или запустить create_order без согласия клиента.
+NON_ASSERTIVE = re.compile(
+	r"\b(?:буд[еу]\w*|может|могут|должен|должна|должны|чтобы|если|после|когда|бы)\b", re.IGNORECASE
+)
+# Сколько символов до «заказ» смотрим на такой маркер (не дальше начала предложения)
+PREFIX_LIMIT = 60
+# Сколько заказ считается «последним делом» клиента: дальше фраза «заказ оформлен»
+# без нового расчёта уже не ссылка на него, а голословное утверждение
+ORDERED_WINDOW = timedelta(hours=24)
+
+FALLBACK = "Не удалось оформить заказ. Повторите, пожалуйста, просьбу или свяжитесь с оператором."
 
 
 def _created(turn):
@@ -30,7 +42,17 @@ def _created(turn):
 def _claims(text):
 	if NUMBER.search(text):
 		return True
-	return any(not NEGATION.search(m.group("between")) for m in PHRASE.finditer(text))
+	return any(_asserts(text, m) for m in PHRASE.finditer(text))
+
+
+def _asserts(text, match):
+	"""Совпадение PHRASE — утверждение, если оно не отрицание и не будущее/условие."""
+	between = match.group("between")
+	if NEGATION.search(between) or NON_ASSERTIVE.search(between):
+		return False
+	head = text[: match.start()]
+	sentence = head[max((head.rfind(c) for c in ".!?\n"), default=-1) + 1 :]
+	return not NON_ASSERTIVE.search(sentence[-PREFIX_LIMIT:])
 
 
 def _confirmed(text, turn, known):
@@ -41,7 +63,8 @@ def _confirmed(text, turn, known):
 		return numbers <= (created | set(known))
 	# Фраза без номера: результат этого хода — или ссылка на уже существующий
 	# заказ, когда он последнее событие (стадия ordered) и открытого расчёта нет
-	return bool(created) or "stage:ordered" in known
+	# В ходе, где считали заказ (quote_order), «оформлен» — не ссылка на старый заказ
+	return bool(created) or ("stage:ordered" in known and not results_of(turn, "quote_order"))
 
 
 def _recap(turn):
@@ -79,7 +102,8 @@ def stage(events, now):
 	last_quote = quotes[-1] if quotes else None
 	last_order = created[-1] if created else None
 
-	if last_order and (not last_quote or last_order["occurred_at"] >= last_quote["occurred_at"]):
+	fresh = last_order and now - last_order["occurred_at"] <= ORDERED_WINDOW
+	if fresh and (not last_quote or last_order["occurred_at"] >= last_quote["occurred_at"]):
 		return Stage(
 			"ordered",
 			f"заказ {last_order['ref_name']} создан, ждёт подтверждения оператора",

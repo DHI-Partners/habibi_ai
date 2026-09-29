@@ -58,7 +58,7 @@ def resolve_max_loop(configured, default=DEFAULT_MAX_LOOP):
 	return default
 
 
-FALLBACK = "Не удалось выполнить действие. Передаю ваш вопрос оператору."
+FALLBACK = "Не удалось выполнить действие. Повторите, пожалуйста, просьбу или свяжитесь с оператором."
 
 
 def _emit(on_event, kind, name, detail=""):

@@ -52,6 +52,24 @@ class TestУтверждение(unittest.TestCase):
 			with self.subTest(text):
 				self.assertFalse(C.claims(text), text)
 
+	def test_утверждения_рядом_с_благодарностью_остаются(self):
+		for text in ("Готово! Заказ оформлен", "Спасибо, что подтвердили! Заказ оформлен"):
+			with self.subTest(text):
+				self.assertTrue(C.claims(text), text)
+
+	def test_будущее_и_условное_не_утверждение(self):
+		for text in (
+			"Напишите «да», и заказ будет оформлен.",
+			"Подтвердите, чтобы заказ был создан",
+			"Заказ может быть оформлен после подтверждения",
+			"Заказ должен быть создан оператором",
+		):
+			with self.subTest(text):
+				self.assertFalse(C.claims(text), text)
+
+	def test_номер_заказа_утверждение_даже_в_будущем_времени(self):
+		self.assertTrue(C.claims(f"Заказ {N1} будет оформлен"))
+
 	def test_расчёт_не_утверждение(self):
 		self.assertFalse(C.claims("Расчёт AIQ-00012, действует 30 минут. Оформлять заказ?"))
 
@@ -62,6 +80,10 @@ class TestУтверждение(unittest.TestCase):
 class TestПодтверждение(unittest.TestCase):
 	def test_фраза_без_номера_на_стадии_заказа_это_ссылка_на_него(self):
 		self.assertTrue(C.confirmed("Заказ оформлен", [], frozenset({"stage:ordered"})))
+
+	def test_фраза_без_номера_в_ходе_с_расчётом_не_ссылка_на_старый_заказ(self):
+		turn = _turn("Расчёт AIQ-1, итого 100", name="quote_order")
+		self.assertFalse(C.confirmed("Заказ оформлен", turn, frozenset({"stage:ordered"})))
 
 	def test_фраза_без_номера_на_стадии_расчёта_нужен_результат_хода(self):
 		self.assertFalse(C.confirmed("Заказ оформлен", [], frozenset({"stage:quoted"})))
@@ -105,10 +127,12 @@ class TestПересказ(unittest.TestCase):
 	def test_отказ_не_отдаётся_клиенту(self):
 		text = C.recap(_turn("Сначала зачитай расчёт клиенту и дождись согласия."))
 		self.assertNotIn("зачитай", text)
-		self.assertIn("оператору", text)
+		self.assertNotIn("Передаю", text)
+		self.assertIn("оператором", text)
 
 	def test_без_вызова_общая_фраза(self):
-		self.assertIn("оператору", C.recap([]))
+		self.assertNotIn("Передаю", C.recap([]))
+		self.assertIn("оператором", C.recap([]))
 
 
 class TestРеестр(unittest.TestCase):
