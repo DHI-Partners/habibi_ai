@@ -5,8 +5,10 @@
 область не знают ничего и берут правила отсюда. Без frappe, как весь пакет.
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -25,8 +27,8 @@ class Module:
 	последнее из которых показывается всегда, даже старше окна."""
 
 	name: str
-	feature: Optional[str]
-	stage: Optional[Callable]
+	feature: str | None
+	stage: Callable | None
 	commitments: tuple
 	pin: tuple
 
