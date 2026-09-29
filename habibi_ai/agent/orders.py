@@ -8,9 +8,12 @@ from habibi_ai.agent.commitments import Commitment, results_of
 from habibi_ai.agent.registry import Module, Stage
 
 NUMBER = re.compile(r"SAL-ORD-\d{4}-\d+")
-# «Заказ … оформлен/создан», но не «не создан»: честный отказ модели
-# утверждением не считается, иначе он запускал бы довыполнение.
-PHRASE = re.compile(r"заказ\w*[^.\n]{0,40}?(?<!не\s)\b(?:оформлен|создан)[аоы]?\b", re.IGNORECASE)
+# «Заказ … оформлен/создан». Группа between — текст между «заказ» и глаголом:
+# «не» в нём делает фразу отрицанием («не был создан», «ещё не полностью
+# оформлен»), а честный отказ утверждением не считается, иначе он запускал бы
+# довыполнение. Lookbehind переменной ширины не бывает, поэтому проверка вторым шагом.
+PHRASE = re.compile(r"заказ\w*(?P<between>[^.\n]{0,40}?)\b(?:оформлен|создан)[аоы]?\b", re.IGNORECASE)
+NEGATION = re.compile(r"\bне\b", re.IGNORECASE)
 # Только успешный результат create_order. Наличие номера не годится: отказ
 # «Заказ … был удалён оператором» тоже его содержит.
 CREATED = re.compile(r"^Заказ (SAL-ORD-\d{4}-\d+) (?:уже )?создан")
@@ -23,7 +26,9 @@ def _created(turn):
 
 
 def _claims(text):
-	return bool(NUMBER.search(text) or PHRASE.search(text))
+	if NUMBER.search(text):
+		return True
+	return any(not NEGATION.search(m.group("between")) for m in PHRASE.finditer(text))
 
 
 def _confirmed(text, turn, known):
