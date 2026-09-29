@@ -293,11 +293,20 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 		commitments=tuple(c for m in modules for c in m.commitments),
 		known=known,
 		on_event=lambda event: events.record_guard(event, context),
+		# После взаимоблокировки InnoDB транзакция откачена вместе с расчётом этого
+		# хода: продолжать значило бы зачитать клиенту расчёт, которого уже нет
+		reraise=(frappe.QueryDeadlockError, frappe.QueryTimeoutError),
 	)
 	# Движок не сохранил ответ — сохраняем тот, что реально уйдёт клиенту.
 	# Старый движок пишет сам и unpersisted не возвращает: дубля нет.
 	if result.pop("unpersisted", False):
-		client.add_messages(chat_id, [("assistant", result["response"])])
+		# Потерянная строка истории — куда меньший ущерб, чем потерянный ответ или
+		# повторный ход при повторе Telegram, поэтому сбой только в лог
+		_safely(
+			lambda: client.add_messages(chat_id, [("assistant", result["response"])]),
+			None,
+			"ИИ: история ответа",
+		)
 	labels = tool_labels(modules)
 	tags = [labels[t] for t in result.get("tools", []) if t in labels]
 	_safely(
@@ -313,6 +322,11 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 	result.pop("tools", None)
 	# Канал отметит расчёты хода отправленными, когда ответ реально уйдёт
 	result["turn_id"] = context["turn_id"]
+	# Страж подменил текст модели: расчёты хода клиент мог не увидеть. Без turn_id
+	# вызывающий не отметит их показанными (mark_answered(None) — пустая операция),
+	# и create_order откажет по непоказанному расчёту
+	if result.pop("replaced", False):
+		result["turn_id"] = None
 	return result
 
 

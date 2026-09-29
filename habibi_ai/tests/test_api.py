@@ -480,6 +480,25 @@ class TestПрофильИВозможности(IntegrationTestCase):
 		api.run_turn(client, 5, "привет")
 		client.add_messages.assert_called_once_with(5, [("assistant", "ок")])
 
+	def test_сбой_записи_истории_не_стоит_ответа(self):
+		client = self._client_answering("ok")
+		client.step = Mock(return_value={"type": "text", "content": "ок", "persisted": False})
+		client.add_messages = Mock(side_effect=RuntimeError("сбой"))
+		with patch("habibi_ai.api.frappe.log_error") as log_error:
+			result = api.run_turn(client, 5, "привет")
+		self.assertEqual(result["response"], "ок")
+		log_error.assert_called_once()
+		self.assertEqual(log_error.call_args.kwargs["title"], "ИИ: история ответа")
+		self.assertIn("ИИ: история ответа", events.ERROR_TITLES)
+
+	def test_дедлок_записи_события_стража_пробрасывается(self):
+		client = self._client_answering("Заказ оформлен: SAL-ORD-2099-00001")
+		for error in (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+			with self.subTest(error.__name__):
+				with patch("habibi_ai.api.events.record_guard", side_effect=error("сбой")):
+					with self.assertRaises(error):
+						api.run_turn(client, 5, "да")
+
 	def test_старый_движок_ответ_не_дублируется(self):
 		client = self._client_answering("ok")
 		client.add_messages = Mock()

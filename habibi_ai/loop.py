@@ -61,17 +61,19 @@ def resolve_max_loop(configured, default=DEFAULT_MAX_LOOP):
 FALLBACK = "Не удалось выполнить действие. Повторите, пожалуйста, просьбу или свяжитесь с оператором."
 
 
-def _emit(on_event, kind, name, detail=""):
-	"""Сообщает о событии стража. Сбой колбэка не должен стоить клиенту ответа."""
+def _emit(on_event, kind, name, detail="", reraise=()):
+	"""Сообщает о событии стража. Сбой колбэка не должен стоить клиенту ответа,
+	кроме типов из reraise: их вызывающий просит пропустить (дедлок БД)."""
 	if on_event is None:
 		return
 	try:
 		on_event({"kind": kind, "commitment": name, "detail": str(detail)[:200]})
-	except Exception:
-		pass
+	except Exception as e:
+		if reraise and isinstance(e, reraise):
+			raise
 
 
-def _violated(commitments, text, turn, known, on_event):
+def _violated(commitments, text, turn, known, on_event, reraise=()):
 	"""Первое обязательство, которое текст нарушает, или None.
 
 	Сбой самой проверки — не повод молчать или ронять ход: страж добавляет
@@ -82,7 +84,7 @@ def _violated(commitments, text, turn, known, on_event):
 			if check_commitment(commitment, text, turn, known).status == VIOLATED:
 				return commitment
 		except Exception as e:
-			_emit(on_event, "guard_error", commitment.name, repr(e))
+			_emit(on_event, "guard_error", commitment.name, repr(e), reraise)
 	return None
 
 
@@ -93,7 +95,7 @@ def _recap(commitment, turn):
 		return FALLBACK
 
 
-def _answer(text, debug, step_result, used=()):
+def _answer(text, debug, step_result, used=(), replaced=False):
 	answer = {"response": text, "debug": debug}
 	# Движок не сохранил ответ (persist_answer: false) — сохранить итоговый
 	# текст должен вызывающий. Ключ только тогда: старый движок пишет сам, и
@@ -104,6 +106,10 @@ def _answer(text, debug, step_result, used=()):
 	# в журнале. Ключа нет, если инструментов не было — прежний формат не меняется.
 	if used:
 		answer["tools"] = list(dict.fromkeys(used))
+	# Текст модели заменён кодом: расчёты этого хода клиент мог не увидеть. Ключ
+	# только на этих путях; вызывающий не должен отмечать их показанными.
+	if replaced:
+		answer["replaced"] = True
 	return answer
 
 
@@ -119,6 +125,7 @@ def run(
 	commitments=(),
 	known=frozenset(),
 	on_event=None,
+	reraise=(),
 ):
 	"""Ведёт ход до текстового ответа.
 
@@ -129,6 +136,7 @@ def run(
 
 	commitments — обязательства (name, claims, confirmed, fulfil, recap), known —
 	номера, известные из предыдущих ходов, on_event(dict) — журнал событий стража.
+	reraise — типы исключений on_event, которые не глотаются (дедлок БД).
 	Текст, утверждающий несовершённое действие, клиенту не уходит: действие
 	довыполняет код, а ответ строится по его результату.
 	"""
@@ -151,11 +159,11 @@ def run(
 
 		if result.get("type") == "text":
 			text = result.get("content", "")
-			violated = _violated(commitments, text, turn, known, on_event)
+			violated = _violated(commitments, text, turn, known, on_event, reraise)
 			if violated is None:
 				return _answer(text, collected_debug, result, used)
 
-			_emit(on_event, "violated", violated.name, text)
+			_emit(on_event, "violated", violated.name, text, reraise)
 			if debug:
 				collected_debug.append(
 					{"step": "commitment_violation", "data": {"name": violated.name, "text": text[:200]}}
@@ -163,11 +171,11 @@ def run(
 			if violated.name in fulfilled:
 				# Довыполнили, а модель снова утверждает своё: клиенту уходит
 				# то, что собрал код по результату инструмента, не её текст
-				return _answer(_recap(violated, turn), collected_debug, result, used)
+				return _answer(_recap(violated, turn), collected_debug, result, used, replaced=True)
 			if violated.fulfil not in offered:
 				# Инструмент недоступен (стадия не та): действия не будет, а
 				# ложное утверждение наружу выходить не должно
-				return _answer(_recap(violated, turn), collected_debug, result, used)
+				return _answer(_recap(violated, turn), collected_debug, result, used, replaced=True)
 
 			# Согласие клиента получено, действие не совершено — совершает код,
 			# а модель на следующем витке пересказывает настоящий результат.
@@ -179,11 +187,11 @@ def run(
 			content = execute(violated.fulfil, {})
 			used.append(violated.fulfil)
 			turn.append({"type": "tool_result", "id": guard_id, "content": content})
-			_emit(on_event, "fulfilled", violated.name, content)
+			_emit(on_event, "fulfilled", violated.name, content, reraise)
 			if iteration == max_loop:
 				# Виток на пересказ уже некому потратить: вместо LoopExhausted
 				# после совершённого действия клиент получает пересказ кода
-				return _answer(_recap(violated, turn), collected_debug, result, used)
+				return _answer(_recap(violated, turn), collected_debug, result, used, replaced=True)
 			continue
 
 		if result.get("type") != "tool_use" or not result.get("id") or not result.get("name"):

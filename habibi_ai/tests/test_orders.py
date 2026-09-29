@@ -499,3 +499,35 @@ class TestСтражНаИнциденте(OrderFixtures, IntegrationTestCase):
 			limit=1,
 		)[0]
 		self.assertFalse(open_quote)
+
+
+class TestПодменённыйОтветНеОтмечаетРасчёт(OrderFixtures, IntegrationTestCase):
+	"""Страж заменил текст модели (в ходе с расчётом create_order не предложен):
+	клиент расчёта не видел, и отмечать его показанным нельзя."""
+
+	def tearDown(self):
+		frappe.db.delete("AI Event", {"engine_chat_id": self.chat})
+		super().tearDown()
+
+	def test_расчёт_замененного_ответа_остаётся_неотвеченным(self):
+		from unittest.mock import Mock
+
+		from habibi_ai import api
+
+		client = Mock()
+		client.get_max_loop = Mock(return_value=None)
+		client.add_messages = Mock()
+		steps = [
+			{"type": "tool_use", "id": "q1", "name": "quote_order", "input": ORDER},
+			{"type": "text", "content": "Заказ оформлен: SAL-ORD-2099-00001", "persisted": False},
+		]
+		client.step = Mock(side_effect=steps)
+		result = api.run_turn(client, self.chat, "хочу бургер")
+
+		self.assertIsNone(result["turn_id"])
+		self.assertNotIn("SAL-ORD-2099-00001", result["response"])
+		answered = frappe.get_all(
+			"AI Order Quote", filters={"engine_chat_id": self.chat}, pluck="answered_at"
+		)
+		self.assertEqual(len(answered), 1)
+		self.assertFalse(answered[0])

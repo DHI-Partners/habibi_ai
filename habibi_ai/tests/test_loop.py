@@ -265,6 +265,40 @@ class TestСтраж(unittest.TestCase):
 		self._run(_step({"type": "text", "content": "x"}), commitments=(spy,), known=frozenset({"SAL-ORD-9"}))
 		self.assertEqual(seen, [frozenset({"SAL-ORD-9"})])
 
+	def test_подмена_текста_помечена_replaced(self):
+		# Все пути, где клиенту уходит пересказ кода вместо текста модели
+		повторная = _step({"type": "text", "content": "Заказ оформлен"}, {"type": "text", "content": "Заказ оформлен"})
+		cases = {
+			"повторная ложь": self._run(повторная, execute=Mock(return_value="отказ")),
+			"инструмент не предложен": self._run(
+				_step({"type": "text", "content": "Заказ оформлен"}), execute=Mock(), offered=("get_menu",)
+			),
+			"последний виток": self._run(
+				_step({"type": "text", "content": "Заказ оформлен"}), execute=Mock(return_value="x"), max_loop=1
+			),
+		}
+		for name, result in cases.items():
+			with self.subTest(name):
+				self.assertIs(result["replaced"], True)
+
+	def test_без_подмены_replaced_нет(self):
+		step = _step({"type": "text", "content": "Заказ оформлен"}, {"type": "text", "content": "ок"})
+		self.assertNotIn("replaced", self._run(step, execute=Mock(return_value="Заказ N создан")))
+		self.assertNotIn("replaced", self._run(_step({"type": "text", "content": "привет"})))
+
+	def test_reraise_из_колбэка_выходит_из_хода(self):
+		class Deadlock(Exception):
+			pass
+
+		step = _step({"type": "text", "content": "Заказ оформлен"}, {"type": "text", "content": "ок"})
+		with self.assertRaises(Deadlock):
+			self._run(step, on_event=Mock(side_effect=Deadlock()), reraise=(Deadlock,))
+
+	def test_прочее_из_колбэка_глотается_при_reraise(self):
+		step = _step({"type": "text", "content": "Заказ оформлен"}, {"type": "text", "content": "ок"})
+		result = self._run(step, on_event=Mock(side_effect=RuntimeError("сбой")), reraise=(KeyError,))
+		self.assertEqual(result["response"], "ок")
+
 	def test_без_обязательств_поведение_прежнее(self):
 		result = _run(_step({"type": "text", "content": "Заказ оформлен"}))
 		self.assertEqual(result, {"response": "Заказ оформлен", "debug": []})
