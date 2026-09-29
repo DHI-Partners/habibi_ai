@@ -13,6 +13,8 @@
 обязательства приходят снаружи.
 """
 
+from habibi_ai.agent.checks import VIOLATED, check_commitment
+
 DEFAULT_MAX_LOOP = 8
 
 
@@ -77,7 +79,7 @@ def _violated(commitments, text, turn, known, on_event):
 	"""
 	for commitment in commitments:
 		try:
-			if commitment.claims(text) and not commitment.confirmed(text, turn, known):
+			if check_commitment(commitment, text, turn, known).status == VIOLATED:
 				return commitment
 		except Exception as e:
 			_emit(on_event, "guard_error", commitment.name, repr(e))

@@ -5,7 +5,7 @@
 
 import unittest
 
-from habibi_ai.agent import registry
+from habibi_ai.agent import checks, registry
 from habibi_ai.agent.orders import ORDER_COMMITMENT as C
 
 N1 = "SAL-ORD-2026-00026"
@@ -111,3 +111,17 @@ class TestРеестр(unittest.TestCase):
 		registry.register(module)
 		self.assertEqual(registry.active({"delivery"}), [])
 		self.assertEqual(registry.active({"orders"}), [module])
+
+
+class TestВердикт(unittest.TestCase):
+	def test_нет_утверждения_ok(self):
+		self.assertEqual(checks.check_commitment(C, "Есть Classic Burger", [], frozenset()).status, checks.OK)
+
+	def test_подтверждённое_утверждение_ok(self):
+		verdict = checks.check_commitment(C, f"Заказ {N1} создан", _turn(CREATED), frozenset())
+		self.assertEqual(verdict.status, checks.OK)
+
+	def test_неподтверждённое_утверждение_нарушение_с_причиной(self):
+		verdict = checks.check_commitment(C, f"Заказ {N1} создан", [], frozenset())
+		self.assertEqual(verdict.status, checks.VIOLATED)
+		self.assertIn(C.name, verdict.reason)
