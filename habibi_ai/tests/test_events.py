@@ -15,7 +15,19 @@ class TestЖурнал(IntegrationTestCase):
 	def tearDown(self):
 		frappe.db.delete("AI Event", {"engine_chat_id": ["in", [CHAT, OTHER_CHAT]]})
 		frappe.db.delete("Customer", {"name": "_Cust-1"})
+		frappe.db.delete("AI Event", {"channel_name": "_c-777"})
 		super().tearDown()
+
+	def test_канал_из_контекста_пишется_в_событие(self):
+		name = events.record("message_in", "Клиент написал сообщение", actor="Client", context={"channel_chat": ("Telegram Chat", "_c-777")})
+		doc = frappe.get_doc("AI Event", name)
+		self.assertEqual((doc.channel_doctype, doc.channel_name), ("Telegram Chat", "_c-777"))
+
+	def test_события_канала_находятся_до_знакомства_с_клиентом(self):
+		# Ни чата движка, ни клиента: единственный ключ — канальный чат
+		events.record("message_in", "Клиент написал сообщение", actor="Client", context={"channel_chat": ("Telegram Chat", "_c-777")})
+		rows = events.recent({"channel_chat": ("Telegram Chat", "_c-777")})
+		self.assertEqual([r["event_type"] for r in rows], ["message_in"])
 
 	def test_событие_записывается_с_полями_контекста(self):
 		name = events.record(

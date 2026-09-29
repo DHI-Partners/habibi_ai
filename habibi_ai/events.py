@@ -47,6 +47,7 @@ def record(event_type, summary, *, context=None, actor="Bot", customer=None, ref
 		if actor not in ACTORS:
 			raise ValueError(f"актор {actor!r} не из {ACTORS}")
 		ref_doctype, ref_name = ref or (None, None)
+		channel = context.get("channel_chat") or (None, None)
 		doc = frappe.get_doc(
 			{
 				"doctype": DOCTYPE,
@@ -56,6 +57,8 @@ def record(event_type, summary, *, context=None, actor="Bot", customer=None, ref
 				"customer": customer or customers.linked_customer(context.get("channel_chat")),
 				"engine_chat_id": context.get("engine_chat_id"),
 				"turn_id": context.get("turn_id"),
+				"channel_doctype": channel[0],
+				"channel_name": channel[1],
 				"ref_doctype": ref_doctype,
 				"ref_name": ref_name,
 				"summary": _one_line(summary),
@@ -90,6 +93,9 @@ def recent(context, limit=100):
 		or_filters.append(["engine_chat_id", "=", chat])
 	if customer:
 		or_filters.append(["customer", "=", customer])
+	channel = context.get("channel_chat")
+	if channel:
+		or_filters.append(["channel_name", "=", channel[1]])
 	if not or_filters:
 		return []
 

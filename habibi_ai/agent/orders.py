@@ -114,5 +114,6 @@ MODULE = registry.register(
 		stage=stage,
 		commitments=(ORDER_COMMITMENT,),
 		pin=("quote_created", "quote_delivered", "order_created"),
+		labels={"quote_order": "расчёт", "create_order": "заказ"},
 	)
 )

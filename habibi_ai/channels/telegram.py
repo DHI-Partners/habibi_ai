@@ -12,6 +12,7 @@ import frappe
 import requests
 from frappe.utils import get_datetime, now_datetime
 
+from habibi_ai import events
 from habibi_ai.channels import decisions
 from habibi_ai.engine import BotNotFound, ChatNotFound, EngineError
 from habibi_ai.habibi_ai.doctype.ai_channel_chat.ai_channel_chat import REASON_MANUAL
@@ -135,6 +136,7 @@ def _on_message_insert(doc):
 	if not _chat_is_answerable(doc.chat, settings):
 		return
 
+	channel_chat = ("Telegram Chat", doc.chat)
 	message = {
 		"direction": doc.direction,
 		"content": doc.content,
@@ -148,9 +150,24 @@ def _on_message_insert(doc):
 		# ИИ сам отправляет в чат, «ручное» исходящее — это наш же ответ,
 		# записанный слушателем MTProto раньше, чем reply_job его пометил
 		if decisions.should_pause(message, now) and not _ai_is_sending(channel, doc.chat):
+			# Реплика оператора — событие: бот, вернувшись, видит, что диалог вёл человек
+			events.record(
+				"message_staff",
+				"Сотрудник ответил клиенту, бот на паузе",
+				actor="Operator",
+				context={"channel_chat": channel_chat},
+				ref=("Telegram Message", doc.name),
+			)
 			pause(channel, doc.chat, REASON_OPERATOR)
 		return
 
+	events.record(
+		"message_in",
+		"Клиент написал сообщение",
+		actor="Client",
+		context={"channel_chat": channel_chat},
+		ref=("Telegram Message", doc.name),
+	)
 	pair = frappe.db.get_value(PAIR, decisions.pair_name(*channel, doc.chat), ["ai_paused"], as_dict=True)
 	is_bot, in_dialogue = _sender_flags(doc.from_user, channel)
 	if decisions.should_reply(message, settings, pair, is_bot, now, sender_in_dialogue=in_dialogue):

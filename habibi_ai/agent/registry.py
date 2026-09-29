@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -24,13 +24,16 @@ class Stage:
 class Module:
 	"""name — для трассировки; feature — ключ из features.FEATURES или None
 	(включён всегда); stage(events, now) -> Stage | None; pin — типы событий,
-	последнее из которых показывается всегда, даже старше окна."""
+	последнее из которых показывается всегда, даже старше окна; labels —
+	{инструмент: метка} для записи «Бот ответил: …»; метка берётся из
+	фактически вызванных инструментов."""
 
 	name: str
 	feature: str | None
 	stage: Callable | None
 	commitments: tuple
 	pin: tuple
+	labels: dict = field(default_factory=dict)
 
 
 _MODULES = []
@@ -44,3 +47,11 @@ def register(module):
 def active(enabled):
 	"""Модули, включённые на сайте: enabled — множество ключей возможностей."""
 	return [m for m in _MODULES if m.feature is None or m.feature in enabled]
+
+
+def tool_labels(modules):
+	"""Метки инструментов всех переданных модулей одним словарём."""
+	labels = {}
+	for module in modules:
+		labels.update(module.labels)
+	return labels

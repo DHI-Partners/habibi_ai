@@ -137,3 +137,21 @@ class TestВердикт(unittest.TestCase):
 		verdict = checks.check_commitment(C, f"Заказ {N1} создан", [], frozenset())
 		self.assertEqual(verdict.status, checks.VIOLATED)
 		self.assertIn(C.name, verdict.reason)
+
+
+class TestМетки(unittest.TestCase):
+	def setUp(self):
+		self._saved = list(registry._MODULES)
+		registry._MODULES.clear()
+
+	def tearDown(self):
+		registry._MODULES[:] = self._saved
+
+	def test_метки_модулей_объединяются(self):
+		a = registry.Module(name="a", feature=None, stage=None, commitments=(), pin=(), labels={"get_menu": "меню"})
+		b = registry.Module(name="b", feature=None, stage=None, commitments=(), pin=(), labels={"create_order": "заказ"})
+		self.assertEqual(registry.tool_labels([a, b]), {"get_menu": "меню", "create_order": "заказ"})
+
+	def test_модуль_без_меток_допустим(self):
+		bare = registry.Module(name="a", feature=None, stage=None, commitments=(), pin=())
+		self.assertEqual(registry.tool_labels([bare]), {})

@@ -149,6 +149,21 @@ class TestСтраж(unittest.TestCase):
 		extra.setdefault("offered", OFFERED)
 		return _run(step, **extra)
 
+	def test_вызванные_инструменты_в_результате_без_повторов(self):
+		step = _step(
+			{"type": "tool_use", "id": "t1", "name": "get_menu", "input": {}},
+			{"type": "tool_use", "id": "t2", "name": "get_menu", "input": {}},
+			{"type": "text", "content": "ок"},
+		)
+		self.assertEqual(self._run(step, commitments=())["tools"], ["get_menu"])
+
+	def test_без_инструментов_ключа_нет(self):
+		self.assertNotIn("tools", self._run(_step({"type": "text", "content": "привет"}), commitments=()))
+
+	def test_довыполненный_стражем_инструмент_тоже_в_списке(self):
+		step = _step({"type": "text", "content": "Заказ оформлен"}, {"type": "text", "content": "ок"})
+		self.assertEqual(self._run(step)["tools"], ["create_order"])
+
 	def test_подтверждённое_утверждение_уходит_как_есть(self):
 		step = _step(
 			{"type": "tool_use", "id": "t1", "name": "create_order", "input": {}},

@@ -336,6 +336,45 @@ class TestПрофильИВозможности(IntegrationTestCase):
 		client.step = Mock(return_value={"type": "text", "content": text})
 		return client
 
+	def tearDown(self):
+		frappe.db.delete("AI Event", {"engine_chat_id": 5})
+		super().tearDown()
+
+	def _types(self):
+		return [
+			e.event_type
+			for e in frappe.get_all(
+				"AI Event",
+				filters={"engine_chat_id": 5},
+				fields=["event_type"],
+				order_by="occurred_at asc, creation asc",
+			)
+		]
+
+	def test_консоль_пишет_реплику_клиента_и_ответ_бота(self):
+		api.run_turn(self._client_answering("ok"), 5, "привет")
+		self.assertEqual(self._types(), ["message_in", "message_out"])
+
+	def test_канал_реплику_клиента_не_дублирует(self):
+		# Её пишет хук Telegram Message; run_turn пишет только ответ бота
+		api.run_turn(self._client_answering("ok"), 5, "привет", channel_chat=("Telegram Chat", "_c-9"))
+		self.assertEqual(self._types(), ["message_out"])
+
+	def test_метка_ответа_из_вызванных_инструментов(self):
+		client = self._client_answering("ok")
+		client.step = Mock(
+			side_effect=[
+				{"type": "tool_use", "id": "t1", "name": "get_menu", "input": {}},
+				{"type": "text", "content": "меню такое"},
+			]
+		)
+		with patch("habibi_ai.tools.execute", return_value="меню"):
+			api.run_turn(client, 5, "что есть?")
+		out = frappe.get_all(
+			"AI Event", filters={"engine_chat_id": 5, "event_type": "message_out"}, fields=["summary"]
+		)
+		self.assertEqual(out[0].summary, "Бот ответил: меню")
+
 	def test_профиль_уходит_в_движок(self):
 		profile = frappe.get_single("Business Profile")
 		profile.business_name = "Habibi Burger"

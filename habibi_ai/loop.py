@@ -93,13 +93,17 @@ def _recap(commitment, turn):
 		return FALLBACK
 
 
-def _answer(text, debug, step_result):
+def _answer(text, debug, step_result, used=()):
 	answer = {"response": text, "debug": debug}
 	# Движок не сохранил ответ (persist_answer: false) — сохранить итоговый
 	# текст должен вызывающий. Ключ только тогда: старый движок пишет сам, и
 	# вызывающий не должен дублировать реплику.
 	if step_result.get("persisted") is False:
 		answer["unpersisted"] = True
+	# Какие инструменты реально вызывались: из них код собирает метку ответа
+	# в журнале. Ключа нет, если инструментов не было — прежний формат не меняется.
+	if used:
+		answer["tools"] = list(dict.fromkeys(used))
 	return answer
 
 
@@ -128,6 +132,7 @@ def run(
 	Текст, утверждающий несовершённое действие, клиенту не уходит: действие
 	довыполняет код, а ответ строится по его результату.
 	"""
+	used = []
 	fulfilled = set()
 	turn = []
 	collected_debug = []
@@ -148,7 +153,7 @@ def run(
 			text = result.get("content", "")
 			violated = _violated(commitments, text, turn, known, on_event)
 			if violated is None:
-				return _answer(text, collected_debug, result)
+				return _answer(text, collected_debug, result, used)
 
 			_emit(on_event, "violated", violated.name, text)
 			if debug:
@@ -158,9 +163,9 @@ def run(
 			if violated.name in fulfilled:
 				# Довыполнили, а модель снова утверждает своё: клиенту уходит
 				# то, что собрал код по результату инструмента, не её текст
-				return _answer(_recap(violated, turn), collected_debug, result)
+				return _answer(_recap(violated, turn), collected_debug, result, used)
 			if violated.fulfil not in offered:
-				return _answer(text, collected_debug, result)
+				return _answer(text, collected_debug, result, used)
 
 			# Согласие клиента получено, действие не совершено — совершает код,
 			# а модель на следующем витке пересказывает настоящий результат.
@@ -170,12 +175,13 @@ def run(
 			guard_id = f"guard-{len(fulfilled)}"
 			turn.append({"type": "tool_use", "id": guard_id, "name": violated.fulfil, "input": {}})
 			content = execute(violated.fulfil, {})
+			used.append(violated.fulfil)
 			turn.append({"type": "tool_result", "id": guard_id, "content": content})
 			_emit(on_event, "fulfilled", violated.name, content)
 			if iteration == max_loop:
 				# Виток на пересказ уже некому потратить: вместо LoopExhausted
 				# после совершённого действия клиент получает пересказ кода
-				return _answer(_recap(violated, turn), collected_debug, result)
+				return _answer(_recap(violated, turn), collected_debug, result, used)
 			continue
 
 		if result.get("type") != "tool_use" or not result.get("id") or not result.get("name"):
@@ -201,6 +207,7 @@ def run(
 
 		if result["name"] in offered:
 			content = execute(result["name"], result.get("input") or {})
+			used.append(result["name"])
 		else:
 			# Движок решает, что предложить модели, но не что исполнять под
 			# правами тенанта. Модель получает отказ текстом и может

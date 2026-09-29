@@ -845,3 +845,50 @@ class TestКаналСообщения(IntegrationTestCase):
 
 	def test_только_бот(self):
 		self.assertEqual(bridge.channel_of(frappe._dict(telegram_bot="бот")), ("Telegram Bot", "бот"))
+
+
+class TestРепликиВЖурнале(IntegrationTestCase):
+	"""Реплики канала попадают в журнал хуком Telegram Message: клиент и сотрудник."""
+
+	def tearDown(self):
+		frappe.db.delete("AI Event", {"channel_name": "_c-msg"})
+		super().tearDown()
+
+	def _doc(self, direction, automated=0):
+		return frappe._dict(
+			name="_TM-1", chat="_c-msg", direction=direction, content="текст", is_automated=automated, sent_on=None, from_user="u"
+		)
+
+	def _insert(self, doc, **patches):
+		with (
+			patch.object(bridge, "channel_of", return_value=("Telegram Bot", "b")),
+			patch.object(bridge, "channel_settings", return_value=frappe._dict(ai_enabled=1)),
+			patch.object(bridge, "_chat_is_answerable", return_value=True),
+			patch.object(bridge, "_sender_flags", return_value=(False, False)),
+			patch.object(bridge.decisions, "should_reply", return_value=False),
+			patch.object(bridge.decisions, "should_pause", return_value=patches.get("pause", False)),
+			patch.object(bridge, "_ai_is_sending", return_value=False),
+			patch.object(bridge, "pause"),
+		):
+			bridge._on_message_insert(doc)
+
+	def _events(self):
+		return frappe.get_all(
+			"AI Event", filters={"channel_name": "_c-msg"}, fields=["event_type", "actor", "ref_name", "summary"]
+		)
+
+	def test_входящее_пишется_как_реплика_клиента(self):
+		self._insert(self._doc("Incoming"))
+		(event,) = self._events()
+		self.assertEqual((event.event_type, event.actor, event.ref_name), ("message_in", "Client", "_TM-1"))
+		self.assertNotIn("текст", event.summary)
+
+	def test_ручной_ответ_сотрудника_пишется_как_реплика_оператора(self):
+		self._insert(self._doc("Outgoing"), pause=True)
+		(event,) = self._events()
+		self.assertEqual((event.event_type, event.actor), ("message_staff", "Operator"))
+
+	def test_ответ_самого_бота_хук_не_пишет(self):
+		# Его пишет run_turn — с метками инструментов
+		self._insert(self._doc("Outgoing", automated=1))
+		self.assertEqual(self._events(), [])

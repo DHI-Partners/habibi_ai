@@ -1,7 +1,7 @@
 {
  "actions": [],
  "autoname": "AIE-.#######",
- "creation": "2026-09-29 12:00:00.000000",
+ "creation": "2026-09-29 18:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -13,6 +13,8 @@
   "customer",
   "engine_chat_id",
   "turn_id",
+  "channel_doctype",
+  "channel_name",
   "ref_section",
   "ref_doctype",
   "ref_name",
@@ -29,6 +31,8 @@
   {"fieldname": "customer", "fieldtype": "Link", "label": "Клиент", "options": "Customer", "read_only": 1, "search_index": 1},
   {"fieldname": "engine_chat_id", "fieldtype": "Int", "label": "Чат движка", "read_only": 1, "search_index": 1},
   {"fieldname": "turn_id", "fieldtype": "Data", "label": "Ход", "read_only": 1},
+  {"fieldname": "channel_doctype", "fieldtype": "Link", "label": "Тип канального чата", "options": "DocType", "read_only": 1},
+  {"fieldname": "channel_name", "fieldtype": "Dynamic Link", "label": "Канальный чат", "options": "channel_doctype", "read_only": 1, "search_index": 1},
   {"fieldname": "ref_section", "fieldtype": "Section Break", "label": "Объект"},
   {"fieldname": "ref_doctype", "fieldtype": "Link", "label": "Тип объекта", "options": "DocType", "read_only": 1},
   {"fieldname": "ref_name", "fieldtype": "Dynamic Link", "label": "Объект", "options": "ref_doctype", "read_only": 1},
@@ -36,7 +40,7 @@
   {"fieldname": "summary", "fieldtype": "Small Text", "in_list_view": 1, "label": "Кратко", "read_only": 1},
   {"fieldname": "data", "fieldtype": "JSON", "label": "Данные", "read_only": 1}
  ],
- "modified": "2026-09-29 12:00:00.000000",
+ "modified": "2026-09-29 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Habibi AI",
  "name": "AI Event",

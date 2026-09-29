@@ -11,6 +11,7 @@ import frappe
 
 from habibi_ai import events, features, loop, tools
 from habibi_ai.agent import active as active_modules
+from habibi_ai.agent import tool_labels
 from habibi_ai.agent import state as agent_state
 from habibi_ai import profile as business_profile
 from habibi_ai.tools.orders import mark_answered
@@ -258,6 +259,14 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 			lambda: agent_state.render(history, modules, frappe.utils.now_datetime()), "", "ИИ: ход дел"
 		)
 	known = frozenset(e["ref_name"] for e in (history or []) if e.get("ref_name"))
+	if channel_chat is None:
+		# Консоль кабинета: у неё нет Telegram Message, реплику клиента пишем здесь.
+		# Канал пишет её сам хуком — иначе она была бы записана дважды.
+		_safely(
+			lambda: events.record("message_in", "Клиент написал сообщение", actor="Client", context=context),
+			None,
+			"ИИ: журнал событий",
+		)
 	result = loop.run(
 		lambda text, **kwargs: client.step(
 			chat_id,
@@ -283,6 +292,19 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 	# Старый движок пишет сам и unpersisted не возвращает: дубля нет.
 	if result.pop("unpersisted", False):
 		client.add_messages(chat_id, [("assistant", result["response"])])
+	labels = tool_labels(modules)
+	tags = [labels[t] for t in result.get("tools", []) if t in labels]
+	_safely(
+		lambda: events.record(
+			"message_out",
+			"Бот ответил" + (f": {', '.join(dict.fromkeys(tags))}" if tags else ""),
+			context=context,
+			data={"tools": result.get("tools", []), "tags": tags},
+		),
+		None,
+		"ИИ: журнал событий",
+	)
+	result.pop("tools", None)
 	# Канал отметит расчёты хода отправленными, когда ответ реально уйдёт
 	result["turn_id"] = context["turn_id"]
 	return result
