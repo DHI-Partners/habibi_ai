@@ -590,5 +590,33 @@ class TestAddMessages(unittest.TestCase):
 		self.client._post.assert_not_called()
 
 
+class TestШагСДополнениями(unittest.TestCase):
+	"""step дописывает в запрос только то, что задано: старый движок лишние
+	поля игнорирует, но пустые и значения по умолчанию в запросе не нужны."""
+
+	def setUp(self):
+		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")
+		self.client.get_chat = Mock(return_value={"id": 7})
+		self.client._post = Mock(return_value={"type": "text", "content": "ок"})
+
+	def _payload(self, **kwargs):
+		self.client.step(7, "привет", **kwargs)
+		return self.client._post.call_args.args[1]
+
+	def test_по_умолчанию_новых_полей_нет(self):
+		payload = self._payload()
+		self.assertNotIn("session_context", payload)
+		self.assertNotIn("persist_answer", payload)
+
+	def test_контекст_сессии_уходит_в_запрос(self):
+		self.assertEqual(self._payload(session_context="Ход дел")["session_context"], "Ход дел")
+
+	def test_пустой_контекст_сессии_не_уходит(self):
+		self.assertNotIn("session_context", self._payload(session_context=""))
+
+	def test_отказ_от_сохранения_ответа_уходит_в_запрос(self):
+		self.assertIs(self._payload(persist_answer=False)["persist_answer"], False)
+
+
 if __name__ == "__main__":
 	unittest.main()

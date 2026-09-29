@@ -378,7 +378,18 @@ class EngineClient:
 			raise BotNotFound(bot_id)
 		return bots[0].get("max_loop")
 
-	def step(self, chat_id, message, bot_id=None, turn=None, tools=None, debug=False, tenant_context=None):
+	def step(
+		self,
+		chat_id,
+		message,
+		bot_id=None,
+		turn=None,
+		tools=None,
+		debug=False,
+		tenant_context=None,
+		session_context=None,
+		persist_answer=True,
+	):
 		"""Один шаг обработки: движок отвечает текстом либо просит вызвать инструмент.
 
 		get_chat вызывается ДО обращения к движку намеренно: сам endpoint о
@@ -392,6 +403,9 @@ class EngineClient:
 		Цикл ведёт вызывающий (api.send_message), а не движок: инструменты
 		исполняются под правами тенанта, и учётные данные тенантов движку не
 		нужны и не передаются.
+
+		session_context и persist_answer передаются, только когда заданы: старый
+		движок их игнорирует, поэтому порядок выкатки не важен.
 		"""
 		self.get_chat(chat_id)
 		if bot_id is not None:
@@ -406,5 +420,14 @@ class EngineClient:
 		# выкатка habibi_ai и движка не обязана быть одновременной.
 		if tenant_context:
 			payload["tenant_context"] = tenant_context
+		# «Ход дел» из журнала событий. Как и tenant_context: старый движок
+		# поле игнорирует, порядок выкатки не важен.
+		if session_context:
+			payload["session_context"] = session_context
+		# Ответ пишет в историю не движок, а вызывающий: страж мог отбросить
+		# текст модели. Старый движок флаг игнорирует и пишет сам — тогда в
+		# ответе шага нет persisted, и вызывающий ничего не дописывает.
+		if not persist_answer:
+			payload["persist_answer"] = False
 
 		return self._post("ai-process-message", payload)
