@@ -381,3 +381,57 @@ class TestПривязкаЧата(OrderFixtures, IntegrationTestCase):
 			"quote_order", {"items": ORDER["items"], "fulfilment": "pickup"}, ctx("t3", engine_chat, channel)
 		)
 		self.assertIn("Клиент: Привязка Чата", again)
+
+
+class TestСобытия(OrderFixtures, IntegrationTestCase):
+	"""Каждое значимое действие инструментов оставляет след в журнале."""
+
+	def tearDown(self):
+		frappe.db.delete("AI Event", {"engine_chat_id": self.chat})
+		super().tearDown()
+
+	def _events(self, event_type):
+		return frappe.get_all(
+			"AI Event",
+			filters={"engine_chat_id": self.chat, "event_type": event_type},
+			fields=["summary", "actor", "ref_doctype", "ref_name", "data"],
+		)
+
+	def test_расчёт_оставляет_событие(self):
+		qid = quote_id(self._quote(sent=False))
+		(event,) = self._events("quote_created")
+		self.assertEqual((event.ref_doctype, event.ref_name, event.actor), ("AI Order Quote", qid, "Bot"))
+		self.assertIn(f"Расчёт {qid}: 3 870 KZT, самовывоз", event.summary)
+
+	def test_срок_расчёта_лежит_в_данных(self):
+		self._quote(sent=False)
+		(event,) = self._events("quote_created")
+		self.assertIn("expires_on", frappe.parse_json(event.data))
+
+	def test_отправка_расчёта_оставляет_событие_один_раз(self):
+		qid = quote_id(self._quote(sent=False))
+		orders.mark_answered("t1")
+		orders.mark_answered("t1")
+		(event,) = self._events("quote_delivered")
+		self.assertEqual((event.ref_name, event.actor), (qid, "System"))
+
+	def test_заказ_оставляет_событие_с_номером(self):
+		self._quote()
+		text = self._create()
+		(event,) = self._events("order_created")
+		self.assertEqual(event.ref_doctype, "Sales Order")
+		self.assertIn(event.ref_name, text)
+		self.assertIn("черновик", event.summary)
+
+	def test_повторный_create_order_не_пишет_второго_события(self):
+		self._quote()
+		self._create()
+		self._create(turn="t3")
+		self.assertEqual(len(self._events("order_created")), 1)
+
+	def test_отказ_оставляет_событие_без_текста_отказа_в_summary(self):
+		self._quote(sent=False)
+		self._create()
+		(event,) = self._events("order_refused")
+		self.assertEqual(event.summary, "Попытка оформить заказ отклонена")
+		self.assertIn("дождись", frappe.parse_json(event.data)["reason"])

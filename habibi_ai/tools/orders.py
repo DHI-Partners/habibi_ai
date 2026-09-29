@@ -10,7 +10,7 @@
 import frappe
 from frappe.utils import add_to_date, now_datetime, nowdate, strip_html
 
-from habibi_ai import customers
+from habibi_ai import customers, events
 from habibi_ai import order_rules as rules
 from habibi_ai.habibi_ai.doctype.habibi_ai_settings.habibi_ai_settings import get_company
 from habibi_ai.order_rules import Refusal
@@ -249,6 +249,15 @@ def _quote(context, items, fulfilment, zone, customer_name, phone, notes):
 			"expires_on": add_to_date(now_datetime(), minutes=int(rules.QUOTE_TTL.total_seconds() // 60)),
 		}
 	).insert(ignore_permissions=True)
+	events.record(
+		"quote_created",
+		f"Расчёт {quote.name}: {rules.money(quote.grand_total)} {settings.currency}, "
+		+ (f"доставка {zone_name}" if zone_name else "самовывоз"),
+		context=context,
+		customer=customer,
+		ref=(QUOTE, quote.name),
+		data={"grand_total": quote.grand_total, "expires_on": quote.expires_on},
+	)
 
 	parts = [
 		f"Расчёт {quote.name}, действует {int(rules.QUOTE_TTL.total_seconds() // 60)} минут.",
@@ -284,6 +293,14 @@ def create_order(context):
 	try:
 		return _create(context)
 	except Refusal as e:
+		# Причина — в data: текст отказа обращён к модели («сделай новый
+		# quote_order»), и в «ход дел» он попасть не должен.
+		events.record(
+			"order_refused",
+			"Попытка оформить заказ отклонена",
+			context=context,
+			data={"reason": str(e)[:300]},
+		)
 		return str(e)
 
 
@@ -292,10 +309,17 @@ def mark_answered(turn_id):
 
 	Вызывает канал после фактической отправки ответа, консоль — вернув ответ.
 	Не отправилось — отметки нет, и create_order откажет: клиент не видел, на
-	что соглашается.
+	что соглашается. Событие пишется только по расчётам, отмеченным сейчас:
+	повторный вызов (канал повторяет отправку) второго не создаёт.
 	"""
 	if not turn_id:
 		return
+	fresh = frappe.get_all(
+		QUOTE,
+		filters={"turn_id": turn_id, "answered_at": ["is", "not set"]},
+		fields=["name", "engine_chat_id", "customer"],
+		limit_page_length=0,
+	)
 	# IS NULL запросом, а не фильтром «not set»: тот сравнивает ещё и с
 	# пустой строкой, и строгий режим MariaDB отвергает это для Datetime
 	quote = frappe.qb.DocType(QUOTE)
@@ -304,6 +328,15 @@ def mark_answered(turn_id):
 		.set(quote.answered_at, now_datetime())
 		.where((quote.turn_id == turn_id) & quote.answered_at.isnull())
 	).run()
+	for row in fresh:
+		events.record(
+			"quote_delivered",
+			f"Расчёт {row.name} зачитан клиенту",
+			actor="System",
+			context={"engine_chat_id": row.engine_chat_id, "turn_id": turn_id},
+			customer=row.customer,
+			ref=(QUOTE, row.name),
+		)
 
 
 def _latest_quote(context):
@@ -372,6 +405,16 @@ def _create(context):
 		_set_optional_fields(so, quote)
 		so.insert(ignore_permissions=True)
 		quote.db_set("sales_order", so.name)
+		# В той же транзакции, что заказ: откатился заказ — откатилось и
+		# событие, и журнал не расскажет о заказе, которого нет.
+		events.record(
+			"order_created",
+			f"Создан заказ {so.name} по расчёту {quote.name}, черновик",
+			context=context,
+			customer=customer,
+			ref=("Sales Order", so.name),
+			data={"quote": quote.name},
+		)
 	except Refusal:
 		frappe.db.rollback(save_point="create_order")
 		raise
