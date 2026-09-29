@@ -76,3 +76,6 @@ habibi_cabinet_adapters = {
 	"order_total": "habibi_ai.cabinet.adapters.order_total",
 }
 habibi_cabinet_features = ["habibi_ai.api.features_hook"]
+
+# Сводка стража и журнала раз в сутки: при их сбое ход идёт без защиты молча
+scheduler_events = {"daily": ["habibi_ai.monitoring.daily_report"]}

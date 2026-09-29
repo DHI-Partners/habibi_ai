@@ -100,3 +100,39 @@ class TestЖурнал(IntegrationTestCase):
 			events.record("new", "новое", context={"engine_chat_id": CHAT})
 			rows = events.recent({"engine_chat_id": CHAT, "channel_chat": ("Telegram Chat", "c")})
 		self.assertEqual({r["event_type"] for r in rows}, {"old", "new"})
+
+
+class TestСводка(IntegrationTestCase):
+	def tearDown(self):
+		frappe.db.delete("AI Event", {"engine_chat_id": CHAT})
+		frappe.db.delete("Error Log", {"method": "ИИ: сбой стража"})
+		super().tearDown()
+
+	def test_считает_нарушения_и_довыполнения_за_период(self):
+		events.record("commitment_violated", "нарушение", actor="System", context={"engine_chat_id": CHAT})
+		events.record("commitment_violated", "нарушение", actor="System", context={"engine_chat_id": CHAT})
+		events.record("commitment_fulfilled", "довыполнено", actor="System", context={"engine_chat_id": CHAT})
+		stats = events.guard_stats(hours=1)
+		self.assertGreaterEqual(stats["violated"], 2)
+		self.assertGreaterEqual(stats["fulfilled"], 1)
+
+	def test_считает_сбои_механизма(self):
+		before = events.guard_stats(hours=1)["errors"]
+		frappe.log_error(title="ИИ: сбой стража", message="проверка")
+		self.assertEqual(events.guard_stats(hours=1)["errors"], before + 1)
+
+	def test_сводка_за_сутки_предупреждает_о_сбое(self):
+		from habibi_ai import monitoring
+
+		frappe.log_error(title="ИИ: сбой стража", message="проверка")
+		with patch("habibi_ai.monitoring.frappe.log_error") as log_error:
+			monitoring.daily_report()
+		log_error.assert_called_once()
+
+	def test_без_сбоев_сводка_молчит(self):
+		from habibi_ai import monitoring
+
+		frappe.db.delete("Error Log", {"method": ["in", list(events.ERROR_TITLES)]})
+		with patch("habibi_ai.monitoring.frappe.log_error") as log_error:
+			monitoring.daily_report()
+		log_error.assert_not_called()

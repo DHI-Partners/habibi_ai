@@ -135,3 +135,22 @@ def record_guard(event, context):
 		actor="System",
 		data={"commitment": event["commitment"], "detail": event.get("detail")},
 	)
+
+
+# Заголовки Error Log, которые пишет сам механизм: по ним считаются его сбои
+ERROR_TITLES = ("ИИ: журнал событий", "ИИ: ход дел", "ИИ: сбой стража")
+
+
+def guard_stats(hours=24):
+	"""Сводка стража и журнала за период: сколько раз он ловил ложь и сколько раз ломался."""
+	since = frappe.utils.add_to_date(frappe.utils.now_datetime(), hours=-hours)
+	def count(event_type):
+		return frappe.db.count(DOCTYPE, {"occurred_at": [">=", since], "event_type": event_type})
+
+	errors = frappe.db.count("Error Log", {"creation": [">=", since], "method": ["in", list(ERROR_TITLES)]})
+	return {
+		"hours": hours,
+		"violated": count("commitment_violated"),
+		"fulfilled": count("commitment_fulfilled"),
+		"errors": errors,
+	}

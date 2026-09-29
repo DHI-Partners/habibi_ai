@@ -324,3 +324,10 @@ def _tool_names():
 	Отбор по флагам возможностей делает run_turn через features.offered.
 	"""
 	return sorted(tools.registry())
+
+
+@frappe.whitelist()
+def guard_stats(hours=24):
+	"""Сводка стража за период — для администратора: сколько раз он ловил ложь и ломался."""
+	frappe.only_for("System Manager")
+	return events.guard_stats(int(hours))
