@@ -531,3 +531,40 @@ class TestПодменённыйОтветНеОтмечаетРасчёт(Order
 		)
 		self.assertEqual(len(answered), 1)
 		self.assertFalse(answered[0])
+
+	def test_подмена_ответа_просит_оператора(self):
+		from unittest.mock import Mock
+
+		from habibi_ai import api
+
+		client = Mock()
+		client.get_max_loop = Mock(return_value=None)
+		client.add_messages = Mock()
+		client.step = Mock(
+			side_effect=[
+				{"type": "tool_use", "id": "q1", "name": "quote_order", "input": ORDER},
+				{"type": "text", "content": "Заказ оформлен: SAL-ORD-2099-00001", "persisted": False},
+			]
+		)
+		api.run_turn(client, self.chat, "хочу бургер")
+
+		asked = frappe.get_all(
+			"AI Event", filters={"engine_chat_id": self.chat, "event_type": "handoff_requested"}, pluck="summary"
+		)
+		self.assertEqual(len(asked), 1)
+		self.assertTrue(asked[0].startswith("Нужен оператор"))
+
+	def test_обычный_ответ_оператора_не_зовёт(self):
+		from unittest.mock import Mock
+
+		from habibi_ai import api
+
+		client = Mock()
+		client.get_max_loop = Mock(return_value=None)
+		client.add_messages = Mock()
+		client.step = Mock(return_value={"type": "text", "content": "Привет!", "persisted": False})
+		api.run_turn(client, self.chat, "привет")
+
+		self.assertFalse(
+			frappe.db.exists("AI Event", {"engine_chat_id": self.chat, "event_type": "handoff_requested"})
+		)

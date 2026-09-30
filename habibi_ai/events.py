@@ -156,5 +156,6 @@ def guard_stats(hours=24):
 		"hours": hours,
 		"violated": count("commitment_violated"),
 		"fulfilled": count("commitment_fulfilled"),
+		"handoffs": count("handoff_requested"),
 		"errors": errors,
 	}

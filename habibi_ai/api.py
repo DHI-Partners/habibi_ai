@@ -9,7 +9,7 @@ import uuid
 
 import frappe
 
-from habibi_ai import events, features, loop, tools
+from habibi_ai import events, features, handoff, loop, tools
 from habibi_ai.agent import active as active_modules
 from habibi_ai.agent import blocked_tools
 from habibi_ai.agent import tool_labels
@@ -327,6 +327,13 @@ def run_turn(client, chat_id, message, bot_id=None, debug=False, channel_chat=No
 	# и create_order откажет по непоказанному расчёту
 	if result.pop("replaced", False):
 		result["turn_id"] = None
+		# Клиент получил текст кода вместо ответа модели — человеку нужно об этом знать.
+		# Пока это только событие в журнале: поток уведомления не выбран (см. handoff.py)
+		_safely(
+			lambda: handoff.request_operator(context, "ответ бота заменён стражем: утверждение не подтверждено"),
+			None,
+			"ИИ: журнал событий",
+		)
 	return result
 
 

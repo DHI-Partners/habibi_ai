@@ -136,3 +136,27 @@ class TestСводка(IntegrationTestCase):
 		with patch("habibi_ai.monitoring.frappe.log_error") as log_error:
 			monitoring.daily_report()
 		log_error.assert_not_called()
+
+
+class TestПередачаОператору(IntegrationTestCase):
+	"""Заглушка передачи оператору: пока только событие в журнале."""
+
+	def tearDown(self):
+		frappe.db.delete("AI Event", {"engine_chat_id": CHAT})
+		super().tearDown()
+
+	def test_передача_пишет_событие_с_причиной(self):
+		from habibi_ai import handoff
+
+		name = handoff.request_operator({"engine_chat_id": CHAT, "turn_id": "t9"}, "ответ заменён стражем")
+		doc = frappe.get_doc("AI Event", name)
+		self.assertEqual((doc.event_type, doc.actor, doc.engine_chat_id), ("handoff_requested", "System", CHAT))
+		self.assertEqual(doc.summary, "Нужен оператор: ответ заменён стражем")
+		self.assertEqual(frappe.parse_json(doc.data)["reason"], "ответ заменён стражем")
+
+	def test_сводка_считает_передачи(self):
+		from habibi_ai import handoff
+
+		before = events.guard_stats(hours=1)["handoffs"]
+		handoff.request_operator({"engine_chat_id": CHAT}, "причина")
+		self.assertEqual(events.guard_stats(hours=1)["handoffs"], before + 1)
