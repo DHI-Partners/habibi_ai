@@ -15,6 +15,7 @@ ORDER = {
 	"custom_delivery_zone": "Центр",
 	"custom_whatsapp_number": "+77019990011",
 	"custom_fulfilment_type": "Delivery",
+	"custom_payment_status": "Paid",
 }
 ROWS = [
 	{"item_code": "BURGER", "item_name": "Чизбургер", "qty": 2.0},
@@ -82,6 +83,7 @@ class TestKitchenCard(unittest.TestCase):
 				"age": 12,
 				"notes": "аллергия на кунжут",
 				"fulfilment": "Delivery",
+				"payment": "Paid",
 				"items": [{"item_name": "Чизбургер", "qty": 2.0}, {"item_name": "Кола", "qty": 1.0}],
 			},
 		)
@@ -98,6 +100,16 @@ class TestKitchenCard(unittest.TestCase):
 		self.assertIsNone(r.kitchen_card(order, ROWS, NOW)["fulfilment"])
 		order = {**ORDER, "custom_fulfilment_type": ""}
 		self.assertIsNone(r.kitchen_card(order, ROWS, NOW)["fulfilment"])
+
+	def test_оплата_нет_поля_на_сайте_это_none_а_пустое_значение_не_оплачен(self):
+		# Нет поля у заказа вовсе (сайт без него) — оплату не показываем
+		order = {k: v for k, v in ORDER.items() if k != "custom_payment_status"}
+		self.assertIsNone(r.kitchen_card(order, ROWS, NOW)["payment"])
+		self.assertIsNone(r.courier_card(order, ROWS, NOW, own=False)["payment"])
+		# Поле есть, но заказ создан до него и значения нет — «не оплачен»
+		order = {**ORDER, "custom_payment_status": None}
+		self.assertEqual(r.kitchen_card(order, ROWS, NOW)["payment"], "Unpaid")
+		self.assertEqual(r.courier_card(order, ROWS, NOW, own=True)["payment"], "Unpaid")
 
 	def test_пустая_заметка_это_none(self):
 		order = {**ORDER, "custom_kitchen_notes": "   "}
@@ -118,6 +130,7 @@ class TestCourierCard(unittest.TestCase):
 				"address": "мкр. Самал-2, д. 33, кв. 41",
 				"zone": "Центр",
 				"items_count": 2,
+				"payment": "Paid",
 			},
 		)
 

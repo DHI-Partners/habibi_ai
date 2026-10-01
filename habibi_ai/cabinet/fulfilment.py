@@ -22,6 +22,7 @@ from habibi_ai.cabinet import orders
 
 KITCHEN_ROLE = "Habibi Kitchen"
 COURIER_ROLE = "Habibi Courier"
+CONFIRMED = "Confirmed"
 IN_KITCHEN = "In Kitchen"
 READY = "Ready"
 OUT = "Out for Delivery"
@@ -36,6 +37,7 @@ CUSTOM_FIELDS = (
 	"custom_fulfilment_type",
 	"custom_delivery_zone",
 	"custom_whatsapp_number",
+	"custom_payment_status",
 )
 
 
@@ -66,14 +68,14 @@ def _need_employee():
 
 
 def _orders(state, *, courier=None, unassigned=False, delivery_only=False):
-	"""Проведённые заказы в состоянии, старые первыми.
+	"""Проведённые заказы в состоянии (или в любом из перечисленных), старые первыми.
 
 	Нет воркфлоу или поля, по которому надо отбирать, — пустой список, а не
 	ошибка: сайт без доставки курьерами просто не имеет такой очереди."""
 	field = _state_field()
 	if not field:
 		return []
-	filters = {field: state, "docstatus": 1}
+	filters = {field: ["in", [*state]] if isinstance(state, tuple | list) else state, "docstatus": 1}
 	if courier is not None or unassigned:
 		if not _has("custom_courier"):
 			return []
@@ -104,7 +106,8 @@ def _items(names):
 @frappe.whitelist()
 def kitchen_queue():
 	_require(KITCHEN_ROLE)
-	found = _orders(IN_KITCHEN)
+	# Принятый заказ виден кухне сразу: оплата — отдельный статус, а не условие готовки
+	found = _orders((CONFIRMED, IN_KITCHEN))
 	items = _items([o.name for o in found])
 	now = now_datetime()
 	return [rules.kitchen_card(o, items.get(o.name, []), now) for o in found]

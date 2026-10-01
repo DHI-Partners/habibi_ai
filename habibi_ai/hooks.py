@@ -22,6 +22,9 @@ after_migrate = "habibi_ai.setup.after_migrate"
 # ссылка на несуществующую роль, и выдать право некому.
 fixtures = [
 	{"dt": "Role", "filters": [["name", "in", ["Habibi AI Debug"]]]},
+	# Оплата заказа — отдельный статус, который менеджер ставит вручную; поле нужно
+	# кабинету, кухне и курьеру на любом сайте, а не только там, где его завели руками
+	{"dt": "Custom Field", "filters": [["name", "in", ["Sales Order-custom_payment_status"]]]},
 ]
 
 after_app_install = "habibi_ai.setup.after_app_install"

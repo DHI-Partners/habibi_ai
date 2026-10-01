@@ -34,6 +34,18 @@ def plain_address(html):
 	return ", ".join(part for part in parts if part and not _CONTACT.match(part)) or None
 
 
+PAYMENT_FIELD = "custom_payment_status"
+
+
+def payment(order):
+	"""Оплата заказа: «Paid» / «Unpaid»; None — на сайте нет такого поля.
+
+	Поле есть, а значения нет — заказ создан до него: считаем «не оплачен»."""
+	if PAYMENT_FIELD not in order:
+		return None
+	return _text(order.get(PAYMENT_FIELD)) or "Unpaid"
+
+
 def lines(rows):
 	"""Состав без строки доставки: она не еда, кухня и курьер её не готовят и не несут."""
 	return [{"item_name": r["item_name"], "qty": r["qty"]} for r in rows if r["item_code"] != DELIVERY_ITEM]
@@ -46,6 +58,7 @@ def kitchen_card(order, rows, now):
 		"notes": _text(order.get("custom_kitchen_notes")),
 		# Доставка или самовывоз — кухне знать полезно (как собирать), и это не данные клиента
 		"fulfilment": _text(order.get("custom_fulfilment_type")),
+		"payment": payment(order),
 		"items": lines(rows),
 	}
 
@@ -64,6 +77,8 @@ def courier_card(order, rows, now, own):
 		"address": _address(order),
 		"zone": _text(order.get("custom_delivery_zone")),
 		"items_count": len(items),
+		# Курьеру важно знать, оплачен ли заказ: нет — деньги отдаёт клиент на месте
+		"payment": payment(order),
 	}
 	if own:
 		card["phone"] = _text(order.get("custom_whatsapp_number")) or _text(order.get("contact_mobile"))

@@ -43,6 +43,8 @@ class TestPresets(IntegrationTestCase):
 		self.assertIn("docstatus:Проведён", lines)
 		# Колонка — дата создания со временем: по ней же сортируется список («новые сверху»)
 		self.assertIn("creation:Создан", lines)
+		# Оплата — отдельная колонка и фильтр списка (Select-поле даёт выпадающий фильтр само)
+		self.assertIn("custom_payment_status:Оплата", lines)
 		self.assertNotIn("transaction_date:Дата", lines)
 
 	def test_роли_кабинета_читают_счета_для_проведения(self):

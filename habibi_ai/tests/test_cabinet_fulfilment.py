@@ -55,7 +55,7 @@ class TestFulfilmentApi(IntegrationTestCase):
 		self.assertEqual(card["items"], [{"item_name": "Бургер", "qty": 2.0}])
 		for forbidden in ("phone", "address", "customer_name", "zone"):
 			self.assertNotIn(forbidden, card)
-		self.orders_mock.assert_called_once_with(fulfilment.IN_KITCHEN)
+		self.orders_mock.assert_called_once_with((fulfilment.CONFIRMED, fulfilment.IN_KITCHEN))
 
 	def test_курьер_не_вызывает_кухню_и_наоборот(self):
 		with _as("Habibi Courier"), self.assertRaises(frappe.PermissionError):
@@ -91,6 +91,38 @@ class TestFulfilmentApi(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				fulfilment.courier_mine()
 			self.assertEqual(len(fulfilment.courier_free()), 1)
+
+
+class TestQueueQuery(IntegrationTestCase):
+	def test_кухня_берёт_сразу_два_состояния(self):
+		"""Принятый заказ виден кухне сразу, не дожидаясь оплаты и ручного «на кухню»."""
+		with (
+			patch.object(fulfilment, "_state_field", return_value="custom_order_status"),
+			patch.object(fulfilment, "_has", return_value=True),
+			patch("frappe.get_all", return_value=[]) as get_all,
+		):
+			fulfilment._orders((fulfilment.CONFIRMED, fulfilment.IN_KITCHEN))
+			fulfilment._orders(fulfilment.READY, unassigned=True, delivery_only=True)
+		kitchen, courier = (c.kwargs["filters"] for c in get_all.call_args_list)
+		self.assertEqual(kitchen["custom_order_status"], ["in", ["Confirmed", "In Kitchen"]])
+		self.assertEqual(courier["custom_order_status"], "Ready")
+		self.assertEqual(kitchen["docstatus"], 1)
+
+	def test_поле_оплаты_запрашивается_только_если_оно_есть_на_сайте(self):
+		with (
+			patch.object(fulfilment, "_state_field", return_value="custom_order_status"),
+			patch.object(fulfilment, "_has", side_effect=lambda f: f != "custom_payment_status"),
+			patch("frappe.get_all", return_value=[]) as get_all,
+		):
+			fulfilment._orders(fulfilment.READY)
+		self.assertNotIn("custom_payment_status", get_all.call_args.kwargs["fields"])
+		with (
+			patch.object(fulfilment, "_state_field", return_value="custom_order_status"),
+			patch.object(fulfilment, "_has", return_value=True),
+			patch("frappe.get_all", return_value=[]) as get_all,
+		):
+			fulfilment._orders(fulfilment.READY)
+		self.assertIn("custom_payment_status", get_all.call_args.kwargs["fields"])
 
 
 class TestWithoutWorkflow(IntegrationTestCase):

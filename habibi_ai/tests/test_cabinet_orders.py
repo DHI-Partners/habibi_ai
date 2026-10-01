@@ -393,3 +393,58 @@ class TestCabinetOrders(OrderFixtures, IntegrationTestCase):
 		symbol = frappe.db.get_value("Currency", "KZT", "symbol") or "KZT"
 		self.assertEqual(order_total.read([self.so.name]), {self.so.name: f"3 870 {symbol}"})
 		self.assertEqual(order_total.read([]), {})
+
+
+class TestOrderPayment(OrderFixtures, IntegrationTestCase):
+	"""Оплата — отдельный статус заказа, а не условие готовки: менеджер ставит его вручную."""
+
+	def setUp(self):
+		super().setUp()
+		self.so = self.make_bot_order()
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		super().tearDown()
+
+	def test_поле_оплаты_заведено_приложением(self):
+		self.assertTrue(frappe.get_meta("Sales Order").has_field("custom_payment_status"))
+
+	def test_новый_заказ_не_оплачен(self):
+		self.assertEqual(orders.details(self.so.name)["payment"], "Unpaid")
+
+	def test_менеджер_отмечает_оплаченным_и_снимает(self):
+		self.assertEqual(orders.set_payment(self.so.name, "Paid"), {"payment": "Paid"})
+		self.assertEqual(frappe.db.get_value("Sales Order", self.so.name, "custom_payment_status"), "Paid")
+		self.assertEqual(orders.details(self.so.name)["payment"], "Paid")
+		orders.set_payment(self.so.name, "Unpaid")
+		self.assertEqual(orders.details(self.so.name)["payment"], "Unpaid")
+
+	def test_отметка_оставляет_след_в_таймлайне(self):
+		orders.set_payment(self.so.name, "Paid")
+		comments = frappe.get_all(
+			"Comment", filters={"reference_doctype": "Sales Order", "reference_name": self.so.name, "comment_type": "Comment"},
+			pluck="content",
+		)
+		self.assertTrue(any("Оплата" in c and "оплачен" in c for c in comments))
+
+	def test_неизвестный_статус_отклоняется(self):
+		for bad in ("paid", "", "Refunded", None):
+			with self.subTest(bad), self.assertRaises(frappe.ValidationError):
+				orders.set_payment(self.so.name, bad)
+		self.assertEqual(orders.details(self.so.name)["payment"], "Unpaid")
+
+	def test_кухня_и_курьер_оплату_не_ставят(self):
+		for role in ("Habibi Kitchen", "Habibi Courier"):
+			with self.subTest(role), patch("frappe.get_roles", return_value=[role]), self.assertRaises(frappe.PermissionError):
+				orders.set_payment(self.so.name, "Paid")
+		self.assertEqual(orders.details(self.so.name)["payment"], "Unpaid")
+
+	def test_владелец_и_сотрудник_ставят(self):
+		for role in ("Habibi Owner", "Habibi Staff"):
+			with self.subTest(role), patch("frappe.get_roles", return_value=[role]):
+				self.assertEqual(orders.set_payment(self.so.name, "Paid"), {"payment": "Paid"})
+
+	def test_отметка_будит_экраны(self):
+		with patch("habibi_ai.cabinet.orders.realtime.on_change") as on_change:
+			orders.set_payment(self.so.name, "Paid")
+		on_change.assert_called_once()

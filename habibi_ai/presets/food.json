@@ -4,7 +4,7 @@
   "sections": [
     {"key": "home", "label": "Главная", "icon": "home", "kind": "custom", "screen": "home"},
     {"key": "orders", "label": "Заказы", "icon": "receipt", "kind": "generic", "ref_doctype": "Sales Order",
-     "list_fields": "name:Номер\ncustomer_name:Клиент\n@order_total:Сумма\ncustom_fulfilment_type:Получение\ncreation:Создан\n@order_status:Статус\ndocstatus:Проведён",
+     "list_fields": "name:Номер\ncustomer_name:Клиент\n@order_total:Сумма\ncustom_fulfilment_type:Получение\ncustom_payment_status:Оплата\ncreation:Создан\n@order_status:Статус\ndocstatus:Проведён",
      "form_fields": "name:Номер\ncustomer_name:Клиент\ncustom_whatsapp_number:Телефон\ncustom_fulfilment_type:Получение\ncustom_delivery_zone:Зона\ncustom_kitchen_notes:Комментарий\ngrand_total:Сумма",
      "base_filters": "{\"custom_agent_handled\": 1}", "feature": "orders"},
     {"key": "chats", "label": "Переписки", "icon": "message-circle", "kind": "custom", "screen": "chats"},

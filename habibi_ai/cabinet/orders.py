@@ -13,13 +13,19 @@ from frappe.model.workflow import WorkflowStateError, apply_workflow, get_transi
 from frappe.utils.caching import request_cache
 
 from habibi_ai import notify_rules
-from habibi_ai.cabinet import scope
+from habibi_ai.cabinet import realtime, scope
 from habibi_ai.cabinet.money import money
 from habibi_ai.channels import telegram
 from habibi_ai.order_rules import DELIVERY_ITEM
 from habibi_ai.tools.orders import SOURCE_BY_CHANNEL, payable
 
 TEMPLATES = {"accept": "order_accepted", "reject": "order_rejected"}
+
+PAYMENT_FIELD = "custom_payment_status"
+PAYMENT_STATUSES = ("Unpaid", "Paid")
+# Оплату отмечает тот, кто ведёт заказы; кухне и курьеру право на запись в заказ дано
+# ради воркфлоу («Готово», «Доставлено»), но не ради денег
+PAYMENT_ROLES = ("Habibi Owner", "Habibi Staff", "Burger Order Desk", "System Manager")
 
 
 def _workflow(doc):
@@ -214,6 +220,8 @@ def details(name):
 		"zone": _optional(doc, meta, "custom_delivery_zone"),
 		"address": doc.get("shipping_address") or doc.get("address_display") or None,
 		"notes": _optional(doc, meta, "custom_kitchen_notes"),
+		# «Paid» / «Unpaid»; None — на сайте нет поля. Пустое значение — заказ до поля: не оплачен
+		"payment": (_optional(doc, meta, PAYMENT_FIELD) or "Unpaid") if meta.has_field(PAYMENT_FIELD) else None,
 		"items": items,
 		"delivery": delivery,
 		# Как у бота (tools.orders.payable): округлённый итог, если на сайте
@@ -224,6 +232,26 @@ def details(name):
 		"currency_symbol": _symbol(doc.currency),
 		"chat": chat,
 	}
+
+
+@frappe.whitelist(methods=["POST"])
+def set_payment(name, status):
+	"""Менеджер вручную отмечает заказ оплаченным (или снимает отметку).
+
+	Оплата не управляет воркфлоу: принятый заказ готовится независимо от неё.
+	Отметка пишется в таймлайн заказа — кто и что поставил — и будит экраны."""
+	if status not in PAYMENT_STATUSES:
+		frappe.throw(_("Неизвестный статус оплаты"), frappe.ValidationError)
+	if not set(PAYMENT_ROLES) & set(frappe.get_roles()):
+		frappe.throw(_("Нет доступа"), frappe.PermissionError)
+	doc = frappe.get_doc("Sales Order", name)
+	doc.check_permission("write")
+	if not frappe.get_meta("Sales Order").has_field(PAYMENT_FIELD):
+		frappe.throw(_("На этом сайте нет поля оплаты заказа"))
+	doc.db_set(PAYMENT_FIELD, status)
+	doc.add_comment("Comment", _("Оплата: {0}").format(_("оплачен") if status == "Paid" else _("не оплачен")))
+	realtime.on_change(doc)
+	return {"payment": status}
 
 
 def _draft_text(kind, doc, reason=None):
