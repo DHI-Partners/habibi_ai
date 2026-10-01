@@ -6,7 +6,7 @@
 
 import frappe
 from frappe import _
-from frappe.utils import cint, now_datetime
+from frappe.utils import now_datetime
 
 from habibi_telegram import user_client
 
@@ -270,10 +270,14 @@ def delete_conversation(chat, in_telegram=0):
 			_("Бот не может удалять сообщения в Telegram — только в чатах личного аккаунта"), frappe.ValidationError
 		)
 
-	message_ids = frappe.get_all("Telegram Message", filters={"chat": chat}, pluck="message_id")
+	message_count = frappe.db.count("Telegram Message", {"chat": chat})
+	found = left = 0
 	if in_telegram:
+		# Историю перечисляет сам Telegram, а не наша база: после её чистки старые сообщения известны
+		# только ему. Он идёт первым — не принял, у нас ничего не удаляем, чтобы не разойтись
 		chat_id = frappe.db.get_value("Telegram Chat", chat, "chat_id")
-		user_client.delete_messages(pair.channel_name, chat_id, [cint(m) for m in message_ids if m], revoke=True)
+		cleared = user_client.clear_history(pair.channel_name, chat_id, revoke=True)
+		found, left = cleared["found"], cleared["left"]
 
 	# Слушатель Telegram меняет строку чата одновременно с нами — MariaDB отвечает 1020
 	# (QueryDeadlockError). Telegram уже стёр сообщения, поэтому свою часть повторяем
@@ -292,4 +296,11 @@ def delete_conversation(chat, in_telegram=0):
 			# Int без NULL: 0 — «диалога в движке нет», при следующем сообщении заведут новый
 			frappe.db.set_value(PAIR, pair.name, {"engine_chat_id": 0})
 	_notify_chat_changed(chat)
-	return {"messages": len(message_ids), "telegram": in_telegram, "engine": engine}
+	return {
+		"messages": message_count,
+		"telegram": in_telegram,
+		# Сколько сообщений нашлось в Telegram и сколько он не дал стереть (чужие в группе, недавние и т.п.)
+		"telegram_found": found,
+		"telegram_left": left,
+		"engine": engine,
+	}

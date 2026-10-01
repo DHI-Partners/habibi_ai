@@ -447,28 +447,39 @@ class TestDeleteConversation(TestCabinetChats):
 			chats.delete_conversation(self.chat.name, in_telegram=1)
 		self.assertEqual(self._count(), 3)
 
-	def test_в_telegram_через_аккаунт_сначала_telegram_потом_мы(self):
+	def test_в_telegram_через_аккаунт_чистим_по_данным_telegram_а_не_нашей_базе(self):
+		"""Нашей базе доверять нельзя: после чистки она не знает старых сообщений, а в Telegram они лежат."""
 		pair = self._pair()
 		frappe.db.set_value("AI Channel Chat", pair.name, {"channel_doctype": "Telegram Account", "channel_name": "acc-1"})
-		for i, name in enumerate(frappe.get_all("Telegram Message", {"chat": self.chat.name}, pluck="name"), start=1):
-			frappe.db.set_value("Telegram Message", name, "message_id", 100 + i)
 		with (
-			patch("habibi_ai.cabinet.chats.user_client.delete_messages") as delete,
+			patch("habibi_ai.cabinet.chats.user_client.clear_history", return_value={"found": 58, "left": 0}) as clear,
 			patch("habibi_ai.cabinet.chats.api.get_client"),
 		):
 			result = chats.delete_conversation(self.chat.name, in_telegram=1)
-		args = delete.call_args
-		self.assertEqual(args.args[0], "acc-1")
-		self.assertEqual(args.args[1], "990001")
-		self.assertEqual(sorted(args.args[2]), [101, 102, 103])
-		self.assertTrue(args.kwargs["revoke"])
+		clear.assert_called_once_with("acc-1", "990001", revoke=True)
 		self.assertTrue(result["telegram"])
+		self.assertEqual((result["telegram_found"], result["telegram_left"]), (58, 0))
 		self.assertEqual(self._count(), 0)
+
+	def test_telegram_не_дал_стереть_всё_это_видно_в_ответе(self):
+		pair = self._pair()
+		frappe.db.set_value("AI Channel Chat", pair.name, {"channel_doctype": "Telegram Account", "channel_name": "acc-1"})
+		with (
+			patch("habibi_ai.cabinet.chats.user_client.clear_history", return_value={"found": 10, "left": 4}),
+			patch("habibi_ai.cabinet.chats.api.get_client"),
+		):
+			result = chats.delete_conversation(self.chat.name, in_telegram=1)
+		self.assertEqual((result["telegram_found"], result["telegram_left"]), (10, 4))
+
+	def test_без_telegram_полей_telegram_в_ответе_нет(self):
+		result = chats.delete_conversation(self.chat.name)
+		self.assertFalse(result["telegram"])
+		self.assertEqual((result["telegram_found"], result["telegram_left"]), (0, 0))
 
 	def test_telegram_не_принял_ничего_не_удаляем(self):
 		pair = self._pair()
 		frappe.db.set_value("AI Channel Chat", pair.name, {"channel_doctype": "Telegram Account", "channel_name": "acc-1"})
-		with patch("habibi_ai.cabinet.chats.user_client.delete_messages", side_effect=frappe.ValidationError("flood")):
+		with patch("habibi_ai.cabinet.chats.user_client.clear_history", side_effect=frappe.ValidationError("flood")):
 			with self.assertRaises(frappe.ValidationError):
 				chats.delete_conversation(self.chat.name, in_telegram=1)
 		self.assertEqual(self._count(), 3)
@@ -488,7 +499,7 @@ class TestDeleteConversation(TestCabinetChats):
 			return original(doctype, *args, **kwargs)
 
 		with (
-			patch("habibi_ai.cabinet.chats.user_client.delete_messages") as delete,
+			patch("habibi_ai.cabinet.chats.user_client.clear_history", return_value={"found": 3, "left": 0}) as delete,
 			patch.object(frappe.db, "set_value", side_effect=flaky),
 			patch.object(frappe.db, "rollback"),
 		):
