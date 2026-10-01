@@ -8,6 +8,11 @@ from frappe.tests import IntegrationTestCase
 from habibi_ai.cabinet import realtime
 
 
+def _owner_only(roles=realtime.CABINET_ROLES):
+	"""Получатели по ролям: владелец — кабинету, кухни и курьеров нет."""
+	return ["owner@example.com"] if roles == realtime.CABINET_ROLES else []
+
+
 class TestCabinetRealtime(IntegrationTestCase):
 	def setUp(self):
 		# Фиктивные чаты C1, C2… — не настоящие Telegram Chat; правило «чат
@@ -55,7 +60,7 @@ class TestCabinetRealtime(IntegrationTestCase):
 		doc = frappe._dict(doctype="Sales Order", name="SO-BOT")
 		with (
 			patch("habibi_ai.cabinet.realtime.frappe.db.exists", return_value=True),
-			patch("habibi_ai.cabinet.realtime._recipients", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime._recipients", side_effect=_owner_only),
 			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
 		):
 			realtime.on_change(doc)
@@ -68,7 +73,10 @@ class TestCabinetRealtime(IntegrationTestCase):
 
 	def test_заказ_не_от_бота_не_шумит(self):
 		doc = frappe._dict(doctype="Sales Order", name="SO-X")
-		with patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub:
+		with (
+			patch("habibi_ai.cabinet.realtime._recipients", return_value=[]),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
 			realtime.on_change(doc)
 		pub.assert_not_called()
 
@@ -148,10 +156,66 @@ class TestCabinetRealtime(IntegrationTestCase):
 		doc = frappe._dict(doctype="Sales Order", name="SO-BOT", docstatus=1)
 		with (
 			patch("habibi_ai.cabinet.realtime.frappe.db.exists", return_value=True),
-			patch("habibi_ai.cabinet.realtime._recipients", return_value=["owner@example.com"]),
+			patch("habibi_ai.cabinet.realtime._recipients", side_effect=_owner_only),
 			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
 		):
 			realtime.on_change(doc, "on_update_after_submit")
 		pub.assert_called_once_with(
 			"habibi_cabinet", {"topic": "orders", "chat": None}, user="owner@example.com", after_commit=True
 		)
+
+	@staticmethod
+	def _floor_only(roles=realtime.CABINET_ROLES):
+		return ["kitchen@example.com"] if roles == realtime.FLOOR_ROLES else []
+
+	def test_любой_заказ_будит_кухню_и_курьеров(self):
+		"""Заказ, заведённый руками (без AI Order Quote), кухня тоже должна
+		увидеть — поэтому фильтр по расчёту бота к этому событию не относится."""
+		doc = frappe._dict(doctype="Sales Order", name="SO-MANUAL")
+		with (
+			patch("habibi_ai.cabinet.realtime._recipients", side_effect=self._floor_only),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
+			realtime.on_change(doc)
+		pub.assert_called_once_with(
+			"habibi_cabinet",
+			{"topic": "fulfilment", "chat": None},
+			user="kitchen@example.com",
+			after_commit=True,
+		)
+
+	def test_заказ_бота_шлёт_оба_события_каждому_своему(self):
+		doc = frappe._dict(doctype="Sales Order", name="SO-BOT")
+
+		def by_role(roles=realtime.CABINET_ROLES):
+			return ["kitchen@example.com"] if roles == realtime.FLOOR_ROLES else ["owner@example.com"]
+
+		with (
+			patch("habibi_ai.cabinet.realtime.frappe.db.exists", return_value=True),
+			patch("habibi_ai.cabinet.realtime._recipients", side_effect=by_role),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
+			realtime.on_change(doc)
+		sent = {(c.args[1]["topic"], c.kwargs["user"]) for c in pub.call_args_list}
+		self.assertEqual(sent, {("fulfilment", "kitchen@example.com"), ("orders", "owner@example.com")})
+		self.assertEqual(pub.call_count, 2)
+
+	def test_сообщения_чатов_кухню_не_будят(self):
+		with (
+			patch("habibi_ai.cabinet.realtime._recipients", side_effect=self._floor_only),
+			patch("habibi_ai.cabinet.realtime.frappe.publish_realtime") as pub,
+		):
+			realtime.on_change(frappe._dict(doctype="Telegram Message", chat="C1"))
+		pub.assert_not_called()
+
+	def test_получатели_кухни_это_только_её_роли(self):
+		email = "cabinet-realtime-kitchen-test@example.com"
+		if frappe.db.exists("User", email):
+			user = frappe.get_doc("User", email)
+		else:
+			user = frappe.get_doc(
+				{"doctype": "User", "email": email, "first_name": "Kitchen", "send_welcome_email": 0}
+			).insert(ignore_permissions=True)
+		user.add_roles("Habibi Kitchen")
+		self.assertIn(email, realtime._recipients(realtime.FLOOR_ROLES))
+		self.assertNotIn(email, realtime._recipients(realtime.CABINET_ROLES))

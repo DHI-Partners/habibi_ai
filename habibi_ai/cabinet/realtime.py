@@ -10,6 +10,9 @@ publish_realtime без room/user транслирует всем, кто под
 publish_realtime(user=...) на каждого пользователя с ролью Habibi Owner,
 Habibi Staff или System Manager. В малом бизнесе это одна-три учётные записи,
 так что цикл дешевле отдельной комнаты, которой во Frappe для ролей и нет.
+
+Кухня и курьеры получают отдельное событие fulfilment на любой заказ — без
+данных, только сигнал перечитать очередь.
 """
 
 import frappe
@@ -19,9 +22,12 @@ from habibi_ai.cabinet import scope
 
 EVENT = "habibi_cabinet"
 CABINET_ROLES = ("Habibi Owner", "Habibi Staff", "System Manager")
+# Кухня и курьеры слушают свой канал: любое изменение заказа, а не только
+# заказов бота — кухне нужны и заказы, заведённые оператором руками
+FLOOR_ROLES = ("Habibi Kitchen", "Habibi Courier")
 
 
-def _recipients():
+def _recipients(roles=CABINET_ROLES):
 	"""Пользователи кабинета без дублей — одна и та же учётка может держать
 	сразу несколько из перечисленных ролей.
 
@@ -35,7 +41,7 @@ def _recipients():
 		frappe.qb.from_(HasRole)
 		.from_(User)
 		.where(
-			HasRole.role.isin(CABINET_ROLES)
+			HasRole.role.isin(roles)
 			& (User.name != "Administrator")
 			& (User.enabled == 1)
 			& (HasRole.parent == User.name)
@@ -62,8 +68,15 @@ def on_change(doc, method=None):
 		frappe.log_error(title="Кабинет: realtime-событие", message=frappe.get_traceback())
 
 
+def _publish(payload, roles):
+	for user in _recipients(roles):
+		frappe.publish_realtime(EVENT, payload, user=user, after_commit=True)
+
+
 def _on_change(doc):
 	if doc.doctype == "Sales Order":
+		# Сигнал «перечитай очередь» — без данных, на любой заказ
+		_publish({"topic": "fulfilment", "chat": None}, FLOOR_ROLES)
 		if not frappe.db.exists("AI Order Quote", {"sales_order": doc.name}):
 			return
 		payload = {"topic": "orders", "chat": None}
@@ -74,5 +87,4 @@ def _on_change(doc):
 		if not scope.in_scope(chat):
 			return
 		payload = {"topic": "chats", "chat": chat}
-	for user in _recipients():
-		frappe.publish_realtime(EVENT, payload, user=user, after_commit=True)
+	_publish(payload, CABINET_ROLES)
