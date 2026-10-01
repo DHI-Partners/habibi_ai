@@ -416,7 +416,7 @@ class TestDeleteConversation(TestCabinetChats):
 			client.return_value.delete_chat.return_value = True
 			result = chats.delete_conversation(self.chat.name)
 		client.return_value.delete_chat.assert_called_once_with(77)
-		self.assertTrue(result["engine"])
+		self.assertEqual(result["engine"], "cleared")
 		self.assertFalse(frappe.db.get_value("AI Channel Chat", self._pair().name, "engine_chat_id"))
 
 	def test_сбой_движка_не_отменяет_удаление_а_сообщается(self):
@@ -424,12 +424,22 @@ class TestDeleteConversation(TestCabinetChats):
 		with patch("habibi_ai.cabinet.chats.api.get_client", side_effect=RuntimeError("движок недоступен")):
 			result = chats.delete_conversation(self.chat.name)
 		self.assertEqual(self._count(), 0)
-		self.assertFalse(result["engine"])
+		self.assertEqual(result["engine"], "error")
 
-	def test_без_диалога_в_движке_движок_не_зовём(self):
+	def test_без_диалога_в_движке_движок_не_зовём_и_это_не_ошибка(self):
 		with patch("habibi_ai.cabinet.chats.api.get_client") as client:
-			chats.delete_conversation(self.chat.name)
+			result = chats.delete_conversation(self.chat.name)
 		client.assert_not_called()
+		self.assertEqual(result["engine"], "none")
+
+	def test_диалога_в_движке_уже_нет_это_не_ошибка(self):
+		"""Движок ответил «такого диалога нет» (стёрт раньше) — стирать было нечего, не сбой."""
+		frappe.db.set_value("AI Channel Chat", self._pair().name, "engine_chat_id", 77)
+		with patch("habibi_ai.cabinet.chats.api.get_client") as client:
+			client.return_value.delete_chat.return_value = False
+			result = chats.delete_conversation(self.chat.name)
+		self.assertEqual(result["engine"], "none")
+		self.assertFalse(frappe.db.get_value("AI Channel Chat", self._pair().name, "engine_chat_id"))
 
 	def test_в_telegram_только_для_чатов_личного_аккаунта(self):
 		# Привязка к боту: Bot API не умеет стирать чужие и старые сообщения

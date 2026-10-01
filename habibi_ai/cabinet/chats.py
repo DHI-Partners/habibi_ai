@@ -257,14 +257,16 @@ def delete_conversation(chat, in_telegram=0):
 	frappe.db.delete("Telegram Message", {"chat": chat})
 	frappe.db.set_value("Telegram Chat", chat, {"last_message_on": None, "last_message_content": None}, update_modified=False)
 
-	engine = False
+	# «none» — у бота этого разговора нет (или он уже стёрт): стирать нечего, это не сбой
+	engine = "none"
 	if pair.engine_chat_id:
 		try:
-			engine = bool(api.get_client().delete_chat(pair.engine_chat_id))
+			engine = "cleared" if api.get_client().delete_chat(pair.engine_chat_id) else "none"
 		except Exception:
 			# Память ИИ — вторична: переписка у нас уже стёрта, причину оставляем в журнале ошибок
 			frappe.log_error(title="Не удалось стереть диалог в движке ИИ", message=frappe.get_traceback())
-		if engine:
+			engine = "error"
+		if engine != "error":
 			# Int без NULL: 0 — «диалога в движке нет», при следующем сообщении заведут новый
 			frappe.db.set_value(PAIR, pair.name, {"engine_chat_id": 0})
 	_notify_chat_changed(chat)
