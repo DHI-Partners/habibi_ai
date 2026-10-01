@@ -41,6 +41,19 @@ class TestAddress(unittest.TestCase):
 	def test_переводы_строк(self):
 		self.assertEqual(r.plain_address("ул. Абая, 12\nАлматы\n"), "ул. Абая, 12, Алматы")
 
+	def test_контакты_из_справочника_адресов_убираются(self):
+		"""ERPNext кладёт в address_display строки «Phone: …», «Email: …»: телефон клиента
+		курьер видит только после «Взять», поэтому из адреса он уходит всегда."""
+		html = "Dostyk Ave 132, apt 45<br>Almaty, Kazakhstan<br>Phone: +77015550101<br>Email: a@b.kz<br>Fax: 123<br>"
+		self.assertEqual(r.plain_address(html), "Dostyk Ave 132, apt 45, Almaty, Kazakhstan")
+		self.assertEqual(r.plain_address("ул. Абая, 12<br>Алматы<br>Телефон: +77015550101<br>Эл. почта: a@b.kz"), "ул. Абая, 12, Алматы")
+
+	def test_свободный_заказ_не_выдаёт_телефон_через_адрес(self):
+		order = {**ORDER, "address_display": "ул. Абая, 12<br>Алматы<br>Phone: +77015550101"}
+		card = r.courier_card(order, ROWS, NOW, own=False)
+		self.assertNotIn("+7701", str(card))
+		self.assertEqual(card["address"], "ул. Абая, 12, Алматы")
+
 	def test_пусто_это_none(self):
 		for value in (None, "", "  <br> ", "\n"):
 			with self.subTest(value):

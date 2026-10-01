@@ -21,11 +21,17 @@ def _text(value):
 	return value or None
 
 
+# Справочник адресов ERPNext дописывает к адресу контакты («Phone: …», «Email: …»).
+# Телефон клиента курьер видит только после «Взять», поэтому из адреса они уходят.
+_CONTACT = re.compile(r"^\s*(phone|mobile|tel|fax|e-?mail|телефон|тел|факс|эл\.?\s*почта|почта)\b", re.IGNORECASE)
+
+
 def plain_address(html):
 	"""Адрес Frappe хранит HTML («улица<br>город<br>»): курьеру нужна строка."""
 	text = re.sub(r"<br\s*/?>|\n", ",", html or "", flags=re.IGNORECASE)
 	text = re.sub(r"<[^>]+>", "", text)
-	return ", ".join(part.strip() for part in text.split(",") if part.strip()) or None
+	parts = [part.strip() for part in text.split(",")]
+	return ", ".join(part for part in parts if part and not _CONTACT.match(part)) or None
 
 
 def lines(rows):
