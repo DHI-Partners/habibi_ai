@@ -70,3 +70,43 @@ class TestPresets(IntegrationTestCase):
 		self.assertEqual(str(saved.get("feature_delivery")), "1")
 		self.assertEqual(saved.get("accept_action"), "Confirm")
 		self.assertEqual(saved.get("reject_action"), "Cancel Order")
+
+	def test_разделы_кухни_и_курьера_только_для_своих_ролей(self):
+		presets.apply("food")
+		sections = {s.key: s for s in frappe.get_single("Cabinet Settings").sections}
+		self.assertEqual(
+			(sections["kitchen"].kind, sections["kitchen"].screen, sections["kitchen"].roles),
+			("custom", "kitchen", "Habibi Kitchen"),
+		)
+		self.assertEqual(
+			(sections["courier"].kind, sections["courier"].screen, sections["courier"].roles),
+			("custom", "courier", "Habibi Courier"),
+		)
+		self.assertEqual(sections["courier"].icon, "bike")
+		# Повторное применение не плодит копий
+		presets.apply("food")
+		keys = [s.key for s in frappe.get_single("Cabinet Settings").sections]
+		self.assertEqual(keys.count("kitchen"), 1)
+		self.assertEqual(keys.count("courier"), 1)
+
+	def test_права_кухни_и_курьера_на_заказ(self):
+		"""Воркфлоу проверяет write на заказ, orders.apply — read; проведение
+		и сохранение подтягивают чтение связанных доктайпов."""
+		presets.apply("food")
+		for role in ("Habibi Kitchen", "Habibi Courier"):
+			with self.subTest(role):
+				self.assertTrue(
+					frappe.db.exists("Custom DocPerm", {"parent": "Sales Order", "role": role, "read": 1, "write": 1})
+				)
+				self.assertTrue(frappe.db.exists("Custom DocPerm", {"parent": "Account", "role": role, "read": 1}))
+				# Ни удалять, ни отменять заказ они не вправе
+				self.assertFalse(
+					frappe.db.exists("Custom DocPerm", {"parent": "Sales Order", "role": role, "delete": 1})
+				)
+				self.assertFalse(
+					frappe.db.exists("Custom DocPerm", {"parent": "Sales Order", "role": role, "cancel": 1})
+				)
+		if frappe.db.exists("DocType", "Employee"):
+			self.assertTrue(
+				frappe.db.exists("Custom DocPerm", {"parent": "Employee", "role": "Habibi Courier", "read": 1})
+			)

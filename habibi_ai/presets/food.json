@@ -19,7 +19,9 @@
      "can_edit": 1, "roles": "Habibi Owner", "feature": "delivery"},
     {"key": "hours", "label": "Режим работы", "icon": "clock", "kind": "custom", "screen": "hours", "roles": "Habibi Owner"},
     {"key": "profile", "label": "О компании", "icon": "building", "kind": "custom", "screen": "profile", "roles": "Habibi Owner"},
-    {"key": "telegram", "label": "Telegram", "icon": "send", "kind": "custom", "screen": "telegram", "roles": "Habibi Owner"}
+    {"key": "telegram", "label": "Telegram", "icon": "send", "kind": "custom", "screen": "telegram", "roles": "Habibi Owner"},
+    {"key": "kitchen", "label": "Кухня", "icon": "utensils", "kind": "custom", "screen": "kitchen", "roles": "Habibi Kitchen", "feature": "orders"},
+    {"key": "courier", "label": "Доставки", "icon": "bike", "kind": "custom", "screen": "courier", "roles": "Habibi Courier", "feature": "delivery"}
   ],
   "rules": [
     {"title": "Доставка", "hint": "Сколько идёт доставка? Сколько стоит? Куда не возите?"},
@@ -38,6 +40,9 @@
       "Account": ["read"]},
     "Habibi Staff": {"Sales Order": ["read", "write", "submit", "cancel"], "Customer": ["read"], "Item": ["read"], "Telegram Chat": ["read"],
       "Telegram Message": ["read"], "AI Channel Chat": ["read", "write"], "AI Order Quote": ["read"], "Habibi AI Settings": ["read"], "Company": ["read"],
-      "Account": ["read"]}
+      "Account": ["read"]},
+    "Habibi Kitchen": {"Sales Order": ["read", "write"], "Item": ["read"], "Customer": ["read"], "Account": ["read"]},
+    "Habibi Courier": {"Sales Order": ["read", "write"], "Item": ["read"], "Customer": ["read"], "Account": ["read"],
+      "Employee": ["read"], "Delivery Zone": ["read"]}
   }
 }
