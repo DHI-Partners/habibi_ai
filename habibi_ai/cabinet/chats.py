@@ -63,7 +63,7 @@ def list():
 	_check_list_permission()
 	rows = frappe.get_list(
 		"Telegram Chat",
-		fields=["name", "title", "last_message_content", "last_message_on"],
+		fields=["name", "title", "chat_id", "last_message_content", "last_message_on"],
 		# Только переписки кабинета — без служебного чата с кодами входа,
 		# «Избранного» и личных диалогов без ИИ-канала (cabinet.scope)
 		filters=scope.list_filters(),
@@ -81,6 +81,15 @@ def list():
 		)
 	}
 	paused = {chat: p.ai_paused for chat, p in pairs.items()}
+	# Буквенное имя собеседника (@username): в личном чате id чата — это id пользователя
+	usernames = {
+		u.telegram_user_id: u.telegram_username
+		for u in frappe.get_all(
+			"Telegram User",
+			filters={"telegram_user_id": ["in", [r.chat_id for r in rows if r.chat_id]]},
+			fields=["telegram_user_id", "telegram_username"],
+		)
+	}
 	customers = dict(
 		frappe.get_all(
 			"Dynamic Link",
@@ -96,6 +105,9 @@ def list():
 			"preview": (r.last_message_content or "")[:80],
 			"last_at": str(r.last_message_on or ""),
 			"paused": bool(paused.get(r.name)),
+			# Под именем в шапке: числовой ID и @username — их копируют, чтобы найти человека в Telegram
+			"telegram_id": r.chat_id,
+			"username": (usernames.get(r.chat_id) or "").lstrip("@") or None,
 			# Чат ведёт личный аккаунт — тогда переписку можно стереть и в самом Telegram
 			"via_account": bool(r.name in pairs and pairs[r.name].channel_doctype == "Telegram Account"),
 			"customer": customers.get(r.name),

@@ -378,6 +378,32 @@ class TestCabinetChatScope(IntegrationTestCase):
 		self.assertEqual([c.args[1]["chat"] for c in pub.call_args_list], [self.client])
 
 
+class TestChatIdentity(TestCabinetChats):
+	"""Под именем собеседника — его Telegram ID и буквенное имя: их копируют, чтобы найти человека в Telegram."""
+
+	def _item(self):
+		return next(c for c in chats.list() if c["chat"] == self.chat.name)
+
+	def test_id_всегда_есть(self):
+		self.assertEqual(self._item()["telegram_id"], "990001")
+
+	def test_без_записи_пользователя_имени_нет(self):
+		self.assertIsNone(self._item()["username"])
+
+	def test_буквенное_имя_берётся_у_пользователя_telegram(self):
+		frappe.get_doc(
+			{"doctype": "Telegram User", "telegram_user_id": "990001", "full_name": "Руслан К.", "telegram_username": "ruslan_k"}
+		).insert(ignore_if_duplicate=True)
+		item = self._item()
+		self.assertEqual(item["username"], "ruslan_k")
+
+	def test_пустое_буквенное_имя_это_none(self):
+		frappe.get_doc(
+			{"doctype": "Telegram User", "telegram_user_id": "990001", "full_name": "Руслан К.", "telegram_username": ""}
+		).insert(ignore_if_duplicate=True)
+		self.assertIsNone(self._item()["username"])
+
+
 class TestChatListChannel(TestCabinetChats):
 	def test_список_говорит_через_какой_канал_чат(self):
 		"""Экран предлагает «стереть и в Telegram» только там, где это возможно."""
