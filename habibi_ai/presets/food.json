@@ -13,7 +13,7 @@
     {"key": "menu", "label": "Меню", "icon": "utensils", "kind": "generic", "ref_doctype": "Item",
      "list_fields": "item_name:Название\nitem_group:Группа\n@selling_price:Цена\ndisabled:Снято с продажи",
      "form_fields": "item_name:Название\nitem_group:Группа\n@selling_price:Цена\ndescription:Описание\nimage:Фото\ndisabled:Снято с продажи",
-     "base_filters": "{\"is_sales_item\": 1}", "can_create": 1, "can_edit": 1, "roles": "Habibi Owner"},
+     "base_filters": "{\"is_sales_item\": 1}", "can_create": 1, "can_edit": 1, "can_delete": 1, "roles": "Habibi Owner"},
     {"key": "zones", "label": "Зоны доставки", "icon": "map", "kind": "generic", "ref_doctype": "Delivery Zone",
      "list_fields": "name:Зона\ndelivery_fee:Стоимость", "form_fields": "delivery_fee:Стоимость\nfree_above:Бесплатно от",
      "can_edit": 1, "roles": "Habibi Owner", "feature": "delivery"},
@@ -33,8 +33,8 @@
     "order_rejected": "К сожалению, не сможем выполнить заказ {order}: {reason}"
   },
   "permissions": {
-    "Habibi Owner": {"Sales Order": ["read", "write", "submit", "cancel", "delete"], "Customer": ["read"], "Item": ["read", "write", "create"],
-      "Item Price": ["read", "write", "create"], "Item Group": ["read"], "Delivery Zone": ["read", "write"], "Working Hours": ["read", "write", "create"],
+    "Habibi Owner": {"Sales Order": ["read", "write", "submit", "cancel", "delete"], "Customer": ["read"], "Item": ["read", "write", "create", "delete"],
+      "Item Price": ["read", "write", "create", "delete"], "Item Group": ["read"], "Delivery Zone": ["read", "write"], "Working Hours": ["read", "write", "create"],
       "Telegram Chat": ["read"], "Telegram Message": ["read"], "Telegram Account": ["read", "write", "create"], "AI Channel Chat": ["read", "write"], "AI Order Quote": ["read"],
       "Business Profile": ["read", "write"], "Habibi AI Settings": ["read"], "Price List": ["read"], "Company": ["read"],
       "Account": ["read"]},

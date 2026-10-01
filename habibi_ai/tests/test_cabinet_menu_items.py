@@ -6,6 +6,8 @@ save() без name зовёт get(section, doc.name) на возврате — �
 «Меню», а не только что она вставилась в базу.
 """
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
@@ -105,3 +107,48 @@ class TestCabinetMenuItemPrice(IntegrationTestCase):
 	def test_отрицательная_цена_из_формы_отклоняется(self):
 		with self.assertRaises(frappe.ValidationError):
 			cabinet_api.save("menu", {"item_name": "Позиция с минусом", "selling_price": -5})
+
+
+class TestCabinetMenuDelete(TestCabinetMenuItemCode):
+	"""Позицию меню можно удалить — вместе с её ценой; если по ней были заказы, объясняем, что делать."""
+
+	def setUp(self):
+		super().setUp()
+		# Откат после каждого теста сбрасывает пресет из setUpClass — применяем заново, чтобы раздел был свежим
+		presets.apply("food")
+
+	def test_раздел_меню_разрешает_удаление(self):
+		menu = next(s for s in cabinet_api.config() if s["key"] == "menu")
+		self.assertTrue(menu["can_delete"])
+
+	def test_владелец_удаляет_позицию_и_её_цену(self):
+		code = cabinet_api.save("menu", {"item_name": "Удаляемая позиция", "selling_price": 990})["name"]
+		self.assertTrue(frappe.db.exists("Item Price", {"item_code": code}))
+		cabinet_api.delete("menu", code)
+		self.assertFalse(frappe.db.exists("Item", code))
+		# Цена не остаётся висеть: иначе в прайс-листе «призрак» удалённого блюда
+		self.assertFalse(frappe.db.exists("Item Price", {"item_code": code}))
+
+	def test_позицию_из_заказа_удалить_нельзя_и_цена_остаётся(self):
+		"""Цена удаляется первой — отказ позиции не должен оставить её без цены."""
+		code = cabinet_api.save("menu", {"item_name": "Позиция из заказа", "selling_price": 500})["name"]
+		real = frappe.delete_doc
+
+		def delete(doctype, *args, **kwargs):
+			if doctype == "Item":
+				raise frappe.LinkExistsError("Item is linked with Sales Order")
+			return real(doctype, *args, **kwargs)
+
+		with patch("frappe.delete_doc", side_effect=delete):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				cabinet_api.delete("menu", code)
+		self.assertIn("Снимите её с продажи", str(ctx.exception))
+		self.assertTrue(frappe.db.exists("Item", code))
+		self.assertTrue(frappe.db.exists("Item Price", {"item_code": code}))
+
+	def test_сотрудник_удалять_позиции_не_может(self):
+		code = cabinet_api.save("menu", {"item_name": "Чужая позиция", "selling_price": 100})["name"]
+		# Сотруднику раздела «Меню» не видно вовсе — это строже, чем отказ в праве
+		with patch("frappe.get_roles", return_value=["Habibi Staff"]), self.assertRaises((frappe.PermissionError, frappe.DoesNotExistError)):
+			cabinet_api.delete("menu", code)
+		self.assertTrue(frappe.db.exists("Item", code))

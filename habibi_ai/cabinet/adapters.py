@@ -46,6 +46,12 @@ class SellingPrice:
 			result.setdefault(r["item_code"], float(r["price_list_rate"]))
 		return result
 
+	def before_delete(self, name):
+		"""Позицию удаляют вместе с её ценами: Item Price ссылается на Item и иначе не дал бы её удалить,
+		а цена удалённого блюда в прайс-листе никому не нужна."""
+		for price in frappe.get_all("Item Price", filters={"item_code": name}, pluck="name"):
+			frappe.delete_doc("Item Price", price, force=True, ignore_permissions=True)
+
 	def write(self, doc, value):
 		"""Обновить действующую бессрочную цену или завести новую.
 
