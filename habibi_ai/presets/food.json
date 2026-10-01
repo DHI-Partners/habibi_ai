@@ -20,8 +20,8 @@
     {"key": "hours", "label": "Режим работы", "icon": "clock", "kind": "custom", "screen": "hours", "roles": "Habibi Owner"},
     {"key": "profile", "label": "О компании", "icon": "building", "kind": "custom", "screen": "profile", "roles": "Habibi Owner"},
     {"key": "telegram", "label": "Telegram", "icon": "send", "kind": "custom", "screen": "telegram", "roles": "Habibi Owner"},
-    {"key": "kitchen", "label": "Кухня", "icon": "utensils", "kind": "custom", "screen": "kitchen", "roles": "Habibi Kitchen", "feature": "orders"},
-    {"key": "courier", "label": "Доставки", "icon": "bike", "kind": "custom", "screen": "courier", "roles": "Habibi Courier", "feature": "delivery"}
+    {"key": "kitchen", "label": "Кухня", "icon": "chef-hat", "kind": "custom", "screen": "kitchen", "roles": "Habibi Kitchen", "feature": "orders"},
+    {"key": "courier", "label": "Доставки", "icon": "truck", "kind": "custom", "screen": "courier", "roles": "Habibi Courier", "feature": "delivery"}
   ],
   "rules": [
     {"title": "Доставка", "hint": "Сколько идёт доставка? Сколько стоит? Куда не возите?"},

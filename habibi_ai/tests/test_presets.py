@@ -85,7 +85,8 @@ class TestPresets(IntegrationTestCase):
 			(sections["courier"].kind, sections["courier"].screen, sections["courier"].roles),
 			("custom", "courier", "Habibi Courier"),
 		)
-		self.assertEqual(sections["courier"].icon, "bike")
+		self.assertEqual(sections["courier"].icon, "truck")
+		self.assertEqual(sections["kitchen"].icon, "chef-hat")
 		# Повторное применение не плодит копий
 		presets.apply("food")
 		keys = [s.key for s in frappe.get_single("Cabinet Settings").sections]
