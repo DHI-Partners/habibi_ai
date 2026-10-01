@@ -397,14 +397,14 @@ class TestChatIdentity(TestCabinetChats):
 		item = self._item()
 		self.assertEqual(item["username"], "ruslan_k")
 
-	def test_название_чата_заменяется_именем_человека(self):
-		"""У чатов личного аккаунта название — сам алиас: человеку нужно имя, алиас идёт отдельной строкой."""
+	def test_название_берётся_из_чата_а_не_из_устаревшей_записи_пользователя(self):
+		"""Telegram User — снимок с давнего импорта и мог устареть; актуальное имя человека лежит в названии чата."""
 		frappe.get_doc(
-			{"doctype": "Telegram User", "telegram_user_id": "990001", "full_name": "Руслан К.", "telegram_username": "ruslan_k"}
+			{"doctype": "Telegram User", "telegram_user_id": "990001", "full_name": "Старое Имя", "telegram_username": "ruslan_k"}
 		).insert(ignore_if_duplicate=True)
-		frappe.db.set_value("Telegram Chat", self.chat.name, "title", "ruslan_k")
+		frappe.db.set_value("Telegram Chat", self.chat.name, {"chat_id": "990001", "title": "Руслан"})
 		item = self._item()
-		self.assertEqual(item["title"], "Руслан К.")
+		self.assertEqual(item["title"], "Руслан")
 		self.assertEqual(item["username"], "ruslan_k")
 
 	def test_без_имени_остаётся_название_чата(self):
