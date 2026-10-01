@@ -14,6 +14,7 @@ ORDER = {
 	"custom_kitchen_notes": "  аллергия на кунжут ",
 	"custom_delivery_zone": "Центр",
 	"custom_whatsapp_number": "+77019990011",
+	"custom_fulfilment_type": "Delivery",
 }
 ROWS = [
 	{"item_code": "BURGER", "item_name": "Чизбургер", "qty": 2.0},
@@ -80,6 +81,7 @@ class TestKitchenCard(unittest.TestCase):
 				"name": "SAL-ORD-2026-00015",
 				"age": 12,
 				"notes": "аллергия на кунжут",
+				"fulfilment": "Delivery",
 				"items": [{"item_name": "Чизбургер", "qty": 2.0}, {"item_name": "Кола", "qty": 1.0}],
 			},
 		)
@@ -90,6 +92,12 @@ class TestKitchenCard(unittest.TestCase):
 			self.assertNotIn(forbidden, card)
 		for item in card["items"]:
 			self.assertEqual(set(item), {"item_name", "qty"})
+
+	def test_способ_получения_без_поля_на_сайте_это_none(self):
+		order = {k: v for k, v in ORDER.items() if k != "custom_fulfilment_type"}
+		self.assertIsNone(r.kitchen_card(order, ROWS, NOW)["fulfilment"])
+		order = {**ORDER, "custom_fulfilment_type": ""}
+		self.assertIsNone(r.kitchen_card(order, ROWS, NOW)["fulfilment"])
 
 	def test_пустая_заметка_это_none(self):
 		order = {**ORDER, "custom_kitchen_notes": "   "}

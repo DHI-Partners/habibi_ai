@@ -44,6 +44,8 @@ def kitchen_card(order, rows, now):
 		"name": order["name"],
 		"age": age_minutes(order["modified"], now),
 		"notes": _text(order.get("custom_kitchen_notes")),
+		# Доставка или самовывоз — кухне знать полезно (как собирать), и это не данные клиента
+		"fulfilment": _text(order.get("custom_fulfilment_type")),
 		"items": lines(rows),
 	}
 
