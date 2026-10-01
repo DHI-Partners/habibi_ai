@@ -41,6 +41,9 @@ class TestPresets(IntegrationTestCase):
 		self.assertIn("@order_status:Статус", lines)
 		self.assertIn("@order_total:Сумма", lines)
 		self.assertIn("docstatus:Проведён", lines)
+		# Колонка — дата создания со временем: по ней же сортируется список («новые сверху»)
+		self.assertIn("creation:Создан", lines)
+		self.assertNotIn("transaction_date:Дата", lines)
 
 	def test_роли_кабинета_читают_счета_для_проведения(self):
 		"""Проведение Sales Order проверяет чтение Account (счёт налога) —
