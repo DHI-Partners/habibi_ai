@@ -123,6 +123,31 @@ class EngineClient:
 		self._check(response)
 		return response.json()
 
+	def _delete(self, path, payload=None):
+		response = self.session.delete(
+			f"{self.url}/{path.lstrip('/')}", json=payload, timeout=TIMEOUT
+		)
+		self._check(response)
+
+	def delete_chat(self, chat_id):
+		"""Стереть диалог из памяти движка: сообщения и сам диалог. True — стёрли.
+
+		Чужой диалог не трогаем: сервисный токен тенантов не различает, поэтому
+		владельца проверяем фильтром, а сообщения удаляем только тем же фильтром
+		с тенантом. Чужой или несуществующий диалог — False, не ошибка."""
+		owned = self._items(
+			"customer_chats",
+			{"filter": scoped_filter(self.tenant, {"id": {"_eq": chat_id}}), "fields": "id", "limit": 1},
+		)
+		if not owned:
+			return False
+		self._delete(
+			"items/chat_messages",
+			{"query": {"filter": scoped_filter(self.tenant, {"chat_id": {"_eq": chat_id}})}},
+		)
+		self._delete(f"items/customer_chats/{chat_id}")
+		return True
+
 	def list_bots(self):
 		"""Боты тенанта плюс общие."""
 		return self._items(

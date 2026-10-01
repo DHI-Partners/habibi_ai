@@ -448,3 +448,52 @@ class TestOrderPayment(OrderFixtures, IntegrationTestCase):
 		with patch("habibi_ai.cabinet.orders.realtime.on_change") as on_change:
 			orders.set_payment(self.so.name, "Paid")
 		on_change.assert_called_once()
+
+
+class TestDeleteOrder(OrderFixtures, IntegrationTestCase):
+	"""Владелец удаляет заказ целиком — тестовый или ошибочный."""
+
+	def setUp(self):
+		super().setUp()
+		self.so = self.make_bot_order()
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		super().tearDown()
+
+	def test_владелец_удаляет_заказ_и_расчёт_бота(self):
+		self.assertTrue(frappe.db.exists("AI Order Quote", {"sales_order": self.so.name}))
+		self.assertEqual(orders.delete_order(self.so.name), {"deleted": self.so.name})
+		self.assertFalse(frappe.db.exists("Sales Order", self.so.name))
+		self.assertFalse(frappe.db.exists("AI Order Quote", {"sales_order": self.so.name}))
+
+	def test_проведённый_заказ_тоже_удаляется(self):
+		with patch("habibi_ai.cabinet.orders._workflow", return_value=None):
+			orders.apply(self.so.name, "submit")
+		self.assertEqual(frappe.db.get_value("Sales Order", self.so.name, "docstatus"), 1)
+		orders.delete_order(self.so.name)
+		self.assertFalse(frappe.db.exists("Sales Order", self.so.name))
+
+	def test_заказ_со_счётом_или_платежом_не_удаляется(self):
+		with patch("habibi_ai.cabinet.orders._linked_documents", return_value=["Sales Invoice ACC-SINV-1"]):
+			with self.assertRaises(frappe.ValidationError):
+				orders.delete_order(self.so.name)
+		self.assertTrue(frappe.db.exists("Sales Order", self.so.name))
+
+	def test_только_владелец(self):
+		for role in ("Habibi Staff", "Habibi Kitchen", "Habibi Courier", "Burger Order Desk"):
+			with self.subTest(role), patch("frappe.get_roles", return_value=[role]), self.assertRaises(frappe.PermissionError):
+				orders.delete_order(self.so.name)
+		self.assertTrue(frappe.db.exists("Sales Order", self.so.name))
+
+	def test_несуществующий_заказ(self):
+		with self.assertRaises(frappe.DoesNotExistError):
+			orders.delete_order("SAL-ORD-НЕТ-ТАКОГО")
+
+	def test_удаление_будит_экраны(self):
+		with patch("habibi_ai.cabinet.orders.realtime.on_change") as on_change:
+			orders.delete_order(self.so.name)
+		on_change.assert_called_once()
+
+	def test_нет_ли_привязанных_документов_запрос_работает(self):
+		self.assertEqual(orders._linked_documents(self.so.name), [])

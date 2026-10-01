@@ -376,3 +376,101 @@ class TestCabinetChatScope(IntegrationTestCase):
 			for chat in (self.service, self.saved, self.personal, self.client):
 				chats.realtime.on_change(frappe._dict(doctype="Telegram Message", chat=chat))
 		self.assertEqual([c.args[1]["chat"] for c in pub.call_args_list], [self.client])
+
+
+class TestChatListChannel(TestCabinetChats):
+	def test_список_говорит_через_какой_канал_чат(self):
+		"""Экран предлагает «стереть и в Telegram» только там, где это возможно."""
+		item = next(c for c in chats.list() if c["chat"] == self.chat.name)
+		self.assertFalse(item["via_account"])  # привязан к боту
+		pair = frappe.db.get_value("AI Channel Chat", {"telegram_chat": self.chat.name}, "name")
+		frappe.db.set_value("AI Channel Chat", pair, {"channel_doctype": "Telegram Account", "channel_name": "acc-1"})
+		item = next(c for c in chats.list() if c["chat"] == self.chat.name)
+		self.assertTrue(item["via_account"])
+
+
+class TestDeleteConversation(TestCabinetChats):
+	"""Владелец чистит переписку: у нас, в памяти ИИ и — по желанию — в самом Telegram."""
+
+	def _pair(self):
+		return frappe.get_doc("AI Channel Chat", {"telegram_chat": self.chat.name})
+
+	def _count(self):
+		return frappe.db.count("Telegram Message", {"chat": self.chat.name})
+
+	def test_удаляет_сообщения_и_сбрасывает_превью_но_оставляет_чат_и_привязку(self):
+		frappe.db.set_value("Telegram Chat", self.chat.name, {"last_message_content": "Это Аня"})
+		with patch("habibi_ai.cabinet.chats.api.get_client") as client:
+			client.return_value.delete_chat.return_value = True
+			result = chats.delete_conversation(self.chat.name)
+		self.assertEqual(self._count(), 0)
+		self.assertEqual(result["messages"], 3)
+		self.assertFalse(frappe.db.get_value("Telegram Chat", self.chat.name, "last_message_content"))
+		# Чат и привязка ИИ остаются: бот продолжит отвечать в нём
+		self.assertTrue(frappe.db.exists("Telegram Chat", self.chat.name))
+		self.assertTrue(frappe.db.exists("AI Channel Chat", {"telegram_chat": self.chat.name}))
+
+	def test_память_движка_стирается_и_привязка_забывает_диалог(self):
+		frappe.db.set_value("AI Channel Chat", self._pair().name, "engine_chat_id", 77)
+		with patch("habibi_ai.cabinet.chats.api.get_client") as client:
+			client.return_value.delete_chat.return_value = True
+			result = chats.delete_conversation(self.chat.name)
+		client.return_value.delete_chat.assert_called_once_with(77)
+		self.assertTrue(result["engine"])
+		self.assertFalse(frappe.db.get_value("AI Channel Chat", self._pair().name, "engine_chat_id"))
+
+	def test_сбой_движка_не_отменяет_удаление_а_сообщается(self):
+		frappe.db.set_value("AI Channel Chat", self._pair().name, "engine_chat_id", 77)
+		with patch("habibi_ai.cabinet.chats.api.get_client", side_effect=RuntimeError("движок недоступен")):
+			result = chats.delete_conversation(self.chat.name)
+		self.assertEqual(self._count(), 0)
+		self.assertFalse(result["engine"])
+
+	def test_без_диалога_в_движке_движок_не_зовём(self):
+		with patch("habibi_ai.cabinet.chats.api.get_client") as client:
+			chats.delete_conversation(self.chat.name)
+		client.assert_not_called()
+
+	def test_в_telegram_только_для_чатов_личного_аккаунта(self):
+		# Привязка к боту: Bot API не умеет стирать чужие и старые сообщения
+		with self.assertRaises(frappe.ValidationError):
+			chats.delete_conversation(self.chat.name, in_telegram=1)
+		self.assertEqual(self._count(), 3)
+
+	def test_в_telegram_через_аккаунт_сначала_telegram_потом_мы(self):
+		pair = self._pair()
+		frappe.db.set_value("AI Channel Chat", pair.name, {"channel_doctype": "Telegram Account", "channel_name": "acc-1"})
+		for i, name in enumerate(frappe.get_all("Telegram Message", {"chat": self.chat.name}, pluck="name"), start=1):
+			frappe.db.set_value("Telegram Message", name, "message_id", 100 + i)
+		with (
+			patch("habibi_ai.cabinet.chats.user_client.delete_messages") as delete,
+			patch("habibi_ai.cabinet.chats.api.get_client"),
+		):
+			result = chats.delete_conversation(self.chat.name, in_telegram=1)
+		args = delete.call_args
+		self.assertEqual(args.args[0], "acc-1")
+		self.assertEqual(args.args[1], "990001")
+		self.assertEqual(sorted(args.args[2]), [101, 102, 103])
+		self.assertTrue(args.kwargs["revoke"])
+		self.assertTrue(result["telegram"])
+		self.assertEqual(self._count(), 0)
+
+	def test_telegram_не_принял_ничего_не_удаляем(self):
+		pair = self._pair()
+		frappe.db.set_value("AI Channel Chat", pair.name, {"channel_doctype": "Telegram Account", "channel_name": "acc-1"})
+		with patch("habibi_ai.cabinet.chats.user_client.delete_messages", side_effect=frappe.ValidationError("flood")):
+			with self.assertRaises(frappe.ValidationError):
+				chats.delete_conversation(self.chat.name, in_telegram=1)
+		self.assertEqual(self._count(), 3)
+
+	def test_только_владелец(self):
+		for role in ("Habibi Staff", "Habibi Kitchen"):
+			with self.subTest(role), patch("frappe.get_roles", return_value=[role]), self.assertRaises(frappe.PermissionError):
+				chats.delete_conversation(self.chat.name)
+		self.assertEqual(self._count(), 3)
+
+	def test_служебный_чат_не_удаляется(self):
+		with patch("habibi_ai.cabinet.chats.scope.require", side_effect=frappe.DoesNotExistError):
+			with self.assertRaises(frappe.DoesNotExistError):
+				chats.delete_conversation(self.chat.name)
+		self.assertEqual(self._count(), 3)

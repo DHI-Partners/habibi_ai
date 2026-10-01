@@ -620,3 +620,41 @@ class TestШагСДополнениями(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestDeleteChat(unittest.TestCase):
+	"""Удаление диалога в движке — только своего тенанта: сервисный токен тенантов не различает."""
+
+	def setUp(self):
+		self.client = EngineClient("http://ai-engine:8055", "t", "a.example.com")
+		self.client._check = Mock()
+		self.client.session = Mock()
+
+	def test_чужой_диалог_не_удаляется(self):
+		self.client._items = Mock(return_value=[])  # фильтр по тенанту его не пропустил
+		self.assertFalse(self.client.delete_chat(42))
+		self.client.session.delete.assert_not_called()
+
+	def test_свой_диалог_удаляется_с_сообщениями_и_только_своего_тенанта(self):
+		self.client._items = Mock(return_value=[{"id": 42}])
+		self.assertTrue(self.client.delete_chat(42))
+		calls = self.client.session.delete.call_args_list
+		# Сначала сообщения (по фильтру с тенантом), потом сам диалог
+		messages_url = calls[0].args[0]
+		self.assertTrue(messages_url.endswith("/items/chat_messages"))
+		flt = calls[0].kwargs["json"]["query"]["filter"]
+		self.assertEqual(
+			flt,
+			{"_and": [{"tenant": {"_eq": "a.example.com"}}, {"chat_id": {"_eq": 42}}]},
+		)
+		self.assertTrue(calls[1].args[0].endswith("/items/customer_chats/42"))
+
+	def test_проверка_владельца_идёт_с_фильтром_тенанта(self):
+		self.client._items = Mock(return_value=[{"id": 7}])
+		self.client.delete_chat(7)
+		collection, params = self.client._items.call_args.args
+		self.assertEqual(collection, "customer_chats")
+		self.assertEqual(
+			params["filter"],
+			{"_and": [{"tenant": {"_eq": "a.example.com"}}, {"id": {"_eq": 7}}]},
+		)

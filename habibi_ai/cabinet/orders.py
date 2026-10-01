@@ -26,6 +26,8 @@ PAYMENT_STATUSES = ("Unpaid", "Paid")
 # Оплату отмечает тот, кто ведёт заказы; кухне и курьеру право на запись в заказ дано
 # ради воркфлоу («Готово», «Доставлено»), но не ради денег
 PAYMENT_ROLES = ("Habibi Owner", "Habibi Staff", "Burger Order Desk", "System Manager")
+# Удалять заказы — только владельцу: сотрудник и смена заказ закрывают, но не стирают
+DELETE_ROLES = ("Habibi Owner", "System Manager")
 
 
 def _workflow(doc):
@@ -252,6 +254,57 @@ def set_payment(name, status):
 	doc.add_comment("Comment", _("Оплата: {0}").format(_("оплачен") if status == "Paid" else _("не оплачен")))
 	realtime.on_change(doc)
 	return {"payment": status}
+
+
+def _linked_documents(name):
+	"""Документы учёта, созданные из заказа: счёт, накладная, платёж. Из-за них заказ не удалить —
+	сначала их надо убрать в учёте, иначе в бухгалтерии останутся ссылки в никуда."""
+	found = []
+	for doctype, child, field in (
+		("Sales Invoice", "Sales Invoice Item", "sales_order"),
+		("Delivery Note", "Delivery Note Item", "against_sales_order"),
+	):
+		for parent in {r.parent for r in frappe.get_all(child, filters={field: name}, fields=["parent"])}:
+			found.append(f"{doctype} {parent}")
+	for parent in {
+		r.parent
+		for r in frappe.get_all(
+			"Payment Entry Reference",
+			filters={"reference_doctype": "Sales Order", "reference_name": name},
+			fields=["parent"],
+		)
+	}:
+		found.append(f"Payment Entry {parent}")
+	return sorted(found)
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_order(name):
+	"""Удалить заказ целиком вместе с расчётом бота — для тестовых и ошибочных заказов.
+
+	Проведённый заказ закрываем напрямую и удаляем: отмены через воркфлоу для
+	выданного заказа нет, а проводок у заказа нет, откатывать нечего. Удалённое
+	остаётся в архиве Frappe (Deleted Document)."""
+	if not set(DELETE_ROLES) & set(frappe.get_roles()):
+		frappe.throw(_("Удалять заказы может только владелец"), frappe.PermissionError)
+	if not frappe.db.exists("Sales Order", name):
+		frappe.throw(_("Заказ не найден"), frappe.DoesNotExistError)
+	doc = frappe.get_doc("Sales Order", name)
+	doc.check_permission("delete")
+	linked = _linked_documents(name)
+	if linked:
+		frappe.throw(
+			_("К заказу привязаны документы учёта: {0}. Сначала удалите их.").format(", ".join(linked)),
+			frappe.ValidationError,
+		)
+	# Событие — пока расчёт бота ещё есть: по нему кабинет решает, что это заказ владельца
+	realtime.on_change(doc)
+	for quote in frappe.get_all("AI Order Quote", filters={"sales_order": name}, pluck="name"):
+		frappe.delete_doc("AI Order Quote", quote, force=True, ignore_permissions=True)
+	if doc.docstatus == 1:
+		frappe.db.set_value("Sales Order", name, "docstatus", 2, update_modified=False)
+	frappe.delete_doc("Sales Order", name, force=True, ignore_permissions=True)
+	return {"deleted": name}
 
 
 def _draft_text(kind, doc, reason=None):

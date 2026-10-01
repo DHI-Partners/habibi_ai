@@ -6,13 +6,18 @@
 
 import frappe
 from frappe import _
-from frappe.utils import now_datetime
+from frappe.utils import cint, now_datetime
 
+from habibi_telegram import user_client
+
+from habibi_ai import api
 from habibi_ai.cabinet import realtime, scope
 from habibi_ai.channels import decisions, telegram
 
 PAIR = "AI Channel Chat"
 PAUSED_BY_STAFF = "Выключено вручную"
+# Чистить переписку вправе только владелец: это стирание истории, а не рабочее действие
+DELETE_ROLES = ("Habibi Owner", "System Manager")
 LIST_LIMIT = 100
 PAGE = 50
 
@@ -66,14 +71,16 @@ def list():
 		limit=LIST_LIMIT,
 	)
 	names = [r.name for r in rows]
-	paused = dict(
-		frappe.get_all(
+	pairs = {
+		p.telegram_chat: p
+		for p in frappe.get_all(
 			PAIR,
 			filters={"telegram_chat": ["in", names]},
-			fields=["telegram_chat", "ai_paused"],
-			as_list=True,
+			fields=["telegram_chat", "ai_paused", "channel_doctype"],
+			order_by="modified asc",
 		)
-	)
+	}
+	paused = {chat: p.ai_paused for chat, p in pairs.items()}
 	customers = dict(
 		frappe.get_all(
 			"Dynamic Link",
@@ -89,6 +96,8 @@ def list():
 			"preview": (r.last_message_content or "")[:80],
 			"last_at": str(r.last_message_on or ""),
 			"paused": bool(paused.get(r.name)),
+			# Чат ведёт личный аккаунт — тогда переписку можно стереть и в самом Telegram
+			"via_account": bool(r.name in pairs and pairs[r.name].channel_doctype == "Telegram Account"),
 			"customer": customers.get(r.name),
 		}
 		for r in rows
@@ -218,3 +227,45 @@ def send(chat, text):
 	ours = [c.name for c in candidates if c.content in expected]
 	for name in ours:
 		frappe.db.set_value("Telegram Message", name, "is_automated", 0, update_modified=False)
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_conversation(chat, in_telegram=0):
+	"""Очистить переписку: сообщения у нас и память ИИ о диалоге. Чат и подключение бота остаются.
+
+	in_telegram — стереть и в самом Telegram у всех участников. Возможно только для
+	чатов личного аккаунта: бот через Bot API не стирает чужие и старые сообщения.
+	Telegram идёт первым: не принял — у нас ничего не удаляем, чтобы переписка не
+	разошлась (у нас пусто, в Telegram есть)."""
+	if not set(DELETE_ROLES) & set(frappe.get_roles()):
+		frappe.throw(_("Очищать переписки может только владелец"), frappe.PermissionError)
+	_check_chat_permission(chat)
+	pair = _pair(chat)
+	in_telegram = bool(int(in_telegram or 0))
+	if in_telegram and pair.channel_doctype != "Telegram Account":
+		frappe.throw(
+			_("Бот не может удалять сообщения в Telegram — только в чатах личного аккаунта"), frappe.ValidationError
+		)
+
+	message_ids = frappe.get_all("Telegram Message", filters={"chat": chat}, pluck="message_id")
+	if in_telegram:
+		chat_id = frappe.db.get_value("Telegram Chat", chat, "chat_id")
+		user_client.delete_messages(pair.channel_name, chat_id, [cint(m) for m in message_ids if m], revoke=True)
+
+	# Привязка ссылается на сообщение — отпускаем до удаления
+	frappe.db.set_value(PAIR, pair.name, {"last_processed_message": None})
+	frappe.db.delete("Telegram Message", {"chat": chat})
+	frappe.db.set_value("Telegram Chat", chat, {"last_message_on": None, "last_message_content": None}, update_modified=False)
+
+	engine = False
+	if pair.engine_chat_id:
+		try:
+			engine = bool(api.get_client().delete_chat(pair.engine_chat_id))
+		except Exception:
+			# Память ИИ — вторична: переписка у нас уже стёрта, причину оставляем в журнале ошибок
+			frappe.log_error(title="Не удалось стереть диалог в движке ИИ", message=frappe.get_traceback())
+		if engine:
+			# Int без NULL: 0 — «диалога в движке нет», при следующем сообщении заведут новый
+			frappe.db.set_value(PAIR, pair.name, {"engine_chat_id": 0})
+	_notify_chat_changed(chat)
+	return {"messages": len(message_ids), "telegram": in_telegram, "engine": engine}
