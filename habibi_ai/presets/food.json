@@ -9,7 +9,7 @@
      "base_filters": "{\"custom_agent_handled\": 1}", "feature": "orders"},
     {"key": "chats", "label": "Переписки", "icon": "message-circle", "kind": "custom", "screen": "chats"},
     {"key": "customers", "label": "Клиенты", "icon": "users", "kind": "generic", "ref_doctype": "Customer",
-     "list_fields": "customer_name:Имя\nmobile_no:Телефон", "form_fields": "customer_name:Имя\nmobile_no:Телефон"},
+     "list_fields": "customer_name:Имя\nmobile_no:Телефон\n@orders_count:Заказов\ncreation:Регистрация", "form_fields": "customer_name:Имя\nmobile_no:Телефон"},
     {"key": "menu", "label": "Меню", "icon": "utensils", "kind": "generic", "ref_doctype": "Item",
      "list_fields": "item_name:Название\nitem_group:Группа\n@selling_price:Цена\ndisabled:Снято с продажи",
      "form_fields": "item_name:Название\nitem_group:Группа\n@selling_price:Цена\ndescription:Описание\nimage:Фото\ndisabled:Снято с продажи",

@@ -85,6 +85,33 @@ class SellingPrice:
 selling_price = SellingPrice()
 
 
+# Подписи состояний прод-воркфлоу «Habibi Burger Order»; незнакомое состояние
+# остаётся как названо в воркфлоу — у каждого сайта оно своё.
+STATE_LABELS = {
+	"New": _("Новые"),
+	"Confirmed": _("Приняты"),
+	"In Kitchen": _("На кухне"),
+	"Ready": _("Готовы"),
+	"Out for Delivery": _("В пути"),
+	"Delivered": _("Выданные"),
+	"Cancelled": _("Отменённые"),
+}
+
+
+def _workflow_states(workflow):
+	"""Состояния воркфлоу в его порядке; terminal — из него нет ни одного перехода."""
+	states = frappe.get_all(
+		"Workflow Document State",
+		filters={"parent": workflow, "parenttype": "Workflow"},
+		fields=["state", "doc_status"],
+		order_by="idx asc",
+	)
+	moving = set(
+		frappe.get_all("Workflow Transition", filters={"parent": workflow, "parenttype": "Workflow"}, pluck="state")
+	)
+	return [{"state": s.state, "doc_status": s.doc_status, "terminal": s.state not in moving} for s in states]
+
+
 class OrderStatus:
 	"""Статус заказа в списке — тем же словом, что на экране заказа.
 
@@ -117,6 +144,30 @@ class OrderStatus:
 
 	def write(self, doc, value):
 		raise frappe.PermissionError
+
+	def facets(self):
+		"""Быстрые фильтры списка: по одному на состояние воркфлоу сайта, в его
+		порядке; без воркфлоу — «Новые / Приняты / Отменённые» по docstatus.
+
+		closed — состояние, из которого заказ уже никуда не идёт (выдан, отменён):
+		доска открытых заказов их не показывает, список — показывает."""
+		workflow = orders._workflow(None)
+		if not workflow:
+			return [
+				{"key": "new", "label": _("Новые"), "filters": [["docstatus", "=", 0]], "closed": False},
+				{"key": "accepted", "label": _("Приняты"), "filters": [["docstatus", "=", 1]], "closed": False},
+				{"key": "cancelled", "label": _("Отменённые"), "filters": [["docstatus", "=", 2]], "closed": True},
+			]
+		field = orders._state_field(workflow)
+		return [
+			{
+				"key": s["state"],
+				"label": STATE_LABELS.get(s["state"], s["state"]),
+				"filters": [[field, "=", s["state"]]],
+				"closed": bool(s["terminal"]) or str(s["doc_status"]) == "2",
+			}
+			for s in _workflow_states(workflow)
+		]
 
 
 class OrderTotal:
@@ -160,5 +211,32 @@ class OrderTotal:
 		raise frappe.PermissionError
 
 
+class OrdersCount:
+	"""Сколько заказов у клиента в списке клиентов; отменённые не считаем."""
+
+	doctype = "Customer"
+	label = "Заказов"
+	fieldtype = "Int"
+
+	def editable(self):
+		return False
+
+	def read(self, names):
+		if not names:
+			return {}
+		rows = frappe.get_all(
+			"Sales Order",
+			filters={"customer": ["in", names], "docstatus": ["<", 2]},
+			fields=["customer", {"COUNT": "name", "as": "c"}],
+			group_by="customer",
+		)
+		counts = {r.customer: r.c for r in rows}
+		return {name: counts.get(name, 0) for name in names}
+
+	def write(self, doc, value):
+		raise frappe.PermissionError
+
+
 order_status = OrderStatus()
 order_total = OrderTotal()
+orders_count = OrdersCount()

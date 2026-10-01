@@ -115,3 +115,13 @@ class TestPresets(IntegrationTestCase):
 			self.assertTrue(
 				frappe.db.exists("Custom DocPerm", {"parent": "Employee", "role": "Habibi Courier", "read": 1})
 			)
+
+	def test_клиенты_с_датой_регистрации_и_числом_заказов(self):
+		presets.apply("food")
+		customers = next(s for s in frappe.get_single("Cabinet Settings").sections if s.key == "customers")
+		lines = customers.list_fields.splitlines()
+		self.assertIn("creation:Регистрация", lines)
+		self.assertIn("@orders_count:Заказов", lines)
+		# Форма клиента остаётся прежней: дата регистрации и счётчик в неё не попадают
+		self.assertNotIn("creation", customers.form_fields)
+		self.assertNotIn("orders_count", customers.form_fields)
