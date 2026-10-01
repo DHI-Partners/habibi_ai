@@ -233,7 +233,20 @@ def details(name):
 		"currency": doc.currency,
 		"currency_symbol": _symbol(doc.currency),
 		"chat": chat,
+		# Алиас клиента в Telegram (без @): по нему с ним связываются вне кабинета
+		"telegram_username": _telegram_username(quote),
 	}
+
+
+def _telegram_username(quote):
+	"""@алиас собеседника из чата, из которого пришёл заказ; нет чата или пользователя — None."""
+	if not quote or quote.channel_doctype != "Telegram Chat" or not quote.channel_name:
+		return None
+	chat_id = frappe.db.get_value("Telegram Chat", quote.channel_name, "chat_id")
+	if not chat_id:
+		return None
+	username = frappe.db.get_value("Telegram User", {"telegram_user_id": chat_id}, "telegram_username")
+	return (username or "").lstrip("@") or None
 
 
 @frappe.whitelist(methods=["POST"])

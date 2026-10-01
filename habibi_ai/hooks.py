@@ -78,6 +78,7 @@ habibi_cabinet_adapters = {
 	"order_status": "habibi_ai.cabinet.adapters.order_status",
 	"order_total": "habibi_ai.cabinet.adapters.order_total",
 	"orders_count": "habibi_ai.cabinet.adapters.orders_count",
+	"telegram_alias": "habibi_ai.cabinet.adapters.telegram_alias",
 }
 habibi_cabinet_features = ["habibi_ai.api.features_hook"]
 

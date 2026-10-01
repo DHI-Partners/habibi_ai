@@ -82,14 +82,15 @@ def list():
 	}
 	paused = {chat: p.ai_paused for chat, p in pairs.items()}
 	# Буквенное имя собеседника (@username): в личном чате id чата — это id пользователя
-	usernames = {
-		u.telegram_user_id: u.telegram_username
+	people = {
+		u.telegram_user_id: u
 		for u in frappe.get_all(
 			"Telegram User",
 			filters={"telegram_user_id": ["in", [r.chat_id for r in rows if r.chat_id]]},
-			fields=["telegram_user_id", "telegram_username"],
+			fields=["telegram_user_id", "full_name", "telegram_username"],
 		)
 	}
+	usernames = {uid: p.telegram_username for uid, p in people.items()}
 	customers = dict(
 		frappe.get_all(
 			"Dynamic Link",
@@ -101,7 +102,10 @@ def list():
 	return [
 		{
 			"chat": r.name,
-			"title": r.title or r.name,
+			# У чатов личного аккаунта «название» — сам алиас; человеку нужно имя, алиас идёт отдельной строкой
+			"title": (people[r.chat_id].full_name if r.chat_id in people and people[r.chat_id].full_name else None)
+			or r.title
+			or r.name,
 			"preview": (r.last_message_content or "")[:80],
 			"last_at": str(r.last_message_on or ""),
 			"paused": bool(paused.get(r.name)),

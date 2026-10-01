@@ -3,7 +3,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from habibi_ai.cabinet.adapters import order_status, orders_count, selling_price
+from habibi_ai.cabinet.adapters import order_status, orders_count, selling_price, telegram_alias
 
 PRICE_LIST = "Cabinet Test Selling"
 
@@ -138,3 +138,32 @@ class TestOrdersCount(IntegrationTestCase):
 		self.assertFalse(orders_count.editable())
 		with self.assertRaises(frappe.PermissionError):
 			orders_count.write(None, 1)
+
+
+class TestTelegramAlias(IntegrationTestCase):
+	"""Алиас клиента в списке клиентов: берём у Telegram-чата, привязанного к клиенту."""
+
+	def tearDown(self):
+		frappe.db.rollback()
+
+	def test_алиас_клиента_через_привязанный_чат(self):
+		customer = frappe.get_doc({"doctype": "Customer", "customer_name": "Алиас Тест", "customer_type": "Individual"}).insert()
+		chat = frappe.get_doc({"doctype": "Telegram Chat", "chat_id": "8800001", "title": "Алиас Тест", "type": "private"}).insert()
+		chat.append("links", {"link_doctype": "Customer", "link_name": customer.name})
+		chat.save()
+		frappe.get_doc(
+			{"doctype": "Telegram User", "telegram_user_id": "8800001", "full_name": "Алиас Тест", "telegram_username": "alias_test"}
+		).insert()
+		got = telegram_alias.read([customer.name, "нет такого"])
+		self.assertEqual(got[customer.name], "@alias_test")
+		self.assertIsNone(got["нет такого"])
+
+	def test_клиент_без_чата_без_алиаса_и_пустой_список(self):
+		self.assertEqual(telegram_alias.read([]), {})
+		customer = frappe.get_doc({"doctype": "Customer", "customer_name": "Без чата", "customer_type": "Individual"}).insert()
+		self.assertIsNone(telegram_alias.read([customer.name])[customer.name])
+
+	def test_только_чтение(self):
+		self.assertFalse(telegram_alias.editable())
+		with self.assertRaises(frappe.PermissionError):
+			telegram_alias.write(None, "x")

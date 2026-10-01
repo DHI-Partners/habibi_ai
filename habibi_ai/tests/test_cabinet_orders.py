@@ -497,3 +497,25 @@ class TestDeleteOrder(OrderFixtures, IntegrationTestCase):
 
 	def test_нет_ли_привязанных_документов_запрос_работает(self):
 		self.assertEqual(orders._linked_documents(self.so.name), [])
+
+
+class TestOrderTelegramAlias(OrderFixtures, IntegrationTestCase):
+	"""На экране заказа — алиас клиента в Telegram: по нему с ним связываются вне кабинета."""
+
+	def setUp(self):
+		super().setUp()
+		self.so = self.make_bot_order()
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		super().tearDown()
+
+	def test_алиас_берётся_у_пользователя_чата_заказа(self):
+		chat_id = frappe.db.get_value("Telegram Chat", self.quote_chat, "chat_id")
+		frappe.get_doc(
+			{"doctype": "Telegram User", "telegram_user_id": chat_id, "full_name": "Тест", "telegram_username": "@test_client"}
+		).insert()
+		self.assertEqual(orders.details(self.so.name)["telegram_username"], "test_client")
+
+	def test_нет_пользователя_нет_алиаса(self):
+		self.assertIsNone(orders.details(self.so.name)["telegram_username"])

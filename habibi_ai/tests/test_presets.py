@@ -128,6 +128,9 @@ class TestPresets(IntegrationTestCase):
 		lines = customers.list_fields.splitlines()
 		self.assertIn("creation:Регистрация", lines)
 		self.assertIn("@orders_count:Заказов", lines)
-		# Форма клиента остаётся прежней: дата регистрации и счётчик в неё не попадают
+		# Алиас в Telegram — и в списке, и в карточке клиента (только чтение)
+		self.assertIn("@telegram_alias:Telegram", lines)
+		self.assertIn("@telegram_alias:Telegram", customers.form_fields.splitlines())
+		# Дата регистрации и счётчик заказов в форму не попадают
 		self.assertNotIn("creation", customers.form_fields)
 		self.assertNotIn("orders_count", customers.form_fields)

@@ -243,6 +243,52 @@ class OrdersCount:
 		raise frappe.PermissionError
 
 
+class TelegramAlias:
+	"""Алиас клиента в Telegram (@username) в списке клиентов: берём у чата, привязанного к клиенту."""
+
+	doctype = "Customer"
+	label = "Telegram"
+	fieldtype = "Data"
+
+	def editable(self):
+		return False
+
+	def read(self, names):
+		if not names:
+			return {}
+		links = frappe.get_all(
+			"Dynamic Link",
+			filters={"parenttype": "Telegram Chat", "link_doctype": "Customer", "link_name": ["in", names]},
+			fields=["parent", "link_name"],
+		)
+		chat_ids = dict(
+			frappe.get_all(
+				"Telegram Chat",
+				filters={"name": ["in", [row.parent for row in links]]},
+				fields=["name", "chat_id"],
+				as_list=True,
+			)
+		)
+		usernames = dict(
+			frappe.get_all(
+				"Telegram User",
+				filters={"telegram_user_id": ["in", list(chat_ids.values())]},
+				fields=["telegram_user_id", "telegram_username"],
+				as_list=True,
+			)
+		)
+		result = {name: None for name in names}
+		for row in links:
+			username = (usernames.get(chat_ids.get(row.parent)) or "").lstrip("@")
+			if username:
+				result[row.link_name] = f"@{username}"
+		return result
+
+	def write(self, doc, value):
+		raise frappe.PermissionError
+
+
 order_status = OrderStatus()
 order_total = OrderTotal()
 orders_count = OrdersCount()
+telegram_alias = TelegramAlias()
