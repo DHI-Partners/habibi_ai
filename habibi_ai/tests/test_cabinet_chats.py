@@ -473,6 +473,39 @@ class TestDeleteConversation(TestCabinetChats):
 				chats.delete_conversation(self.chat.name, in_telegram=1)
 		self.assertEqual(self._count(), 3)
 
+	def test_конфликт_записи_с_слушателем_не_роняет_удаление(self):
+		"""Слушатель Telegram меняет строку чата одновременно с нами: MariaDB отвечает 1020
+		(QueryDeadlockError). Раньше это был 500 и расхождение — в Telegram стёрто, у нас нет."""
+		pair = self._pair()
+		frappe.db.set_value("AI Channel Chat", pair.name, {"channel_doctype": "Telegram Account", "channel_name": "acc-1"})
+		original = frappe.db.set_value
+		failures = []
+
+		def flaky(doctype, *args, **kwargs):
+			if doctype == "Telegram Chat" and not failures:
+				failures.append(1)
+				raise frappe.QueryDeadlockError("(1020, \"Record has changed since last read\")")
+			return original(doctype, *args, **kwargs)
+
+		with (
+			patch("habibi_ai.cabinet.chats.user_client.delete_messages") as delete,
+			patch.object(frappe.db, "set_value", side_effect=flaky),
+			patch.object(frappe.db, "rollback"),
+		):
+			chats.delete_conversation(self.chat.name, in_telegram=1)
+		self.assertEqual(failures, [1])
+		self.assertEqual(self._count(), 0)
+		# Telegram уже стёр сообщения — повторно его не дёргаем
+		self.assertEqual(delete.call_count, 1)
+
+	def test_упорный_конфликт_сдаётся_честной_ошибкой(self):
+		def always(doctype, *args, **kwargs):
+			raise frappe.QueryDeadlockError("(1020)")
+
+		with patch.object(frappe.db, "set_value", side_effect=always), patch.object(frappe.db, "rollback"):
+			with self.assertRaises(frappe.ValidationError):
+				chats.delete_conversation(self.chat.name)
+
 	def test_только_владелец(self):
 		for role in ("Habibi Staff", "Habibi Kitchen"):
 			with self.subTest(role), patch("frappe.get_roles", return_value=[role]), self.assertRaises(frappe.PermissionError):

@@ -229,6 +229,29 @@ def send(chat, text):
 		frappe.db.set_value("Telegram Message", name, "is_automated", 0, update_modified=False)
 
 
+CONFLICT_RETRIES = 3
+
+
+def _retry_on_conflict(fn):
+	"""Повторить fn, если слушатель Telegram успел изменить ту же строку (1020 / QueryDeadlockError).
+
+	Перед повтором откатываем транзакцию: её снимок устарел, и без отката конфликт повторился бы."""
+	for attempt in range(CONFLICT_RETRIES):
+		try:
+			return fn()
+		except frappe.QueryDeadlockError:
+			frappe.db.rollback()
+			if attempt == CONFLICT_RETRIES - 1:
+				frappe.throw(_("Чат занят: идёт обмен сообщениями. Попробуйте ещё раз через несколько секунд."), frappe.ValidationError)
+
+
+def _clear_local(chat, pair):
+	"""Стереть переписку у нас: сообщения и превью чата. Привязка ссылается на сообщение — отпускаем её первой."""
+	frappe.db.set_value(PAIR, pair.name, {"last_processed_message": None})
+	frappe.db.delete("Telegram Message", {"chat": chat})
+	frappe.db.set_value("Telegram Chat", chat, {"last_message_on": None, "last_message_content": None}, update_modified=False)
+
+
 @frappe.whitelist(methods=["POST"])
 def delete_conversation(chat, in_telegram=0):
 	"""Очистить переписку: сообщения у нас и память ИИ о диалоге. Чат и подключение бота остаются.
@@ -252,12 +275,11 @@ def delete_conversation(chat, in_telegram=0):
 		chat_id = frappe.db.get_value("Telegram Chat", chat, "chat_id")
 		user_client.delete_messages(pair.channel_name, chat_id, [cint(m) for m in message_ids if m], revoke=True)
 
-	# Привязка ссылается на сообщение — отпускаем до удаления
-	frappe.db.set_value(PAIR, pair.name, {"last_processed_message": None})
-	frappe.db.delete("Telegram Message", {"chat": chat})
-	frappe.db.set_value("Telegram Chat", chat, {"last_message_on": None, "last_message_content": None}, update_modified=False)
+	# Слушатель Telegram меняет строку чата одновременно с нами — MariaDB отвечает 1020
+	# (QueryDeadlockError). Telegram уже стёр сообщения, поэтому свою часть повторяем
+	# с чистой транзакцией, а не падаем: иначе у них пусто, а у нас всё осталось
+	_retry_on_conflict(lambda: _clear_local(chat, pair))
 
-	# «none» — у бота этого разговора нет (или он уже стёрт): стирать нечего, это не сбой
 	engine = "none"
 	if pair.engine_chat_id:
 		try:
