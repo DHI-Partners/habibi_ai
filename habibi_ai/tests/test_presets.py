@@ -134,3 +134,27 @@ class TestPresets(IntegrationTestCase):
 		# Дата регистрации и счётчик заказов в форму не попадают
 		self.assertNotIn("creation", customers.form_fields)
 		self.assertNotIn("orders_count", customers.form_fields)
+
+
+class TestСправочникиПресета(IntegrationTestCase):
+	"""Справочники, которыми владелец управляет сам, умеют и добавлять, и удалять."""
+
+	def _spec(self):
+		import json
+		from pathlib import Path
+
+		return json.loads((Path(presets.__file__).parent / "presets" / "food.json").read_text(encoding="utf-8"))
+
+	def test_зоны_доставки_создаются_и_удаляются(self):
+		spec = self._spec()
+		(zones,) = [s for s in spec["sections"] if s["key"] == "zones"]
+		self.assertTrue(zones.get("can_create") and zones.get("can_edit") and zones.get("can_delete"))
+		# без названия зону не создать: оно и есть имя записи
+		self.assertIn("zone_name", zones["form_fields"])
+		self.assertTrue({"create", "delete"} <= set(spec["permissions"]["Habibi Owner"]["Delivery Zone"]))
+
+	def test_всё_что_можно_создавать_можно_и_удалять(self):
+		for s in self._spec()["sections"]:
+			if s["kind"] == "generic" and s.get("can_create"):
+				self.assertTrue(s.get("can_delete"), f"раздел «{s['key']}» создаёт записи, но не удаляет")
+

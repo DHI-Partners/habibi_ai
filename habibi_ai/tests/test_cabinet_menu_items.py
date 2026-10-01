@@ -142,7 +142,7 @@ class TestCabinetMenuDelete(TestCabinetMenuItemCode):
 		with patch("frappe.delete_doc", side_effect=delete):
 			with self.assertRaises(frappe.ValidationError) as ctx:
 				cabinet_api.delete("menu", code)
-		self.assertIn("Снимите её с продажи", str(ctx.exception))
+		self.assertIn("снимите её с продажи", str(ctx.exception))
 		self.assertTrue(frappe.db.exists("Item", code))
 		self.assertTrue(frappe.db.exists("Item Price", {"item_code": code}))
 
