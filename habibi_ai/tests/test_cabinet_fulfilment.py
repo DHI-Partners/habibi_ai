@@ -132,22 +132,33 @@ class TestTake(IntegrationTestCase):
 			patch.object(fulfilment, "_my_employee", return_value=employee),
 			patch("frappe.db.get_value", return_value=row) as get_value,
 			patch("frappe.get_doc", return_value=doc),
+			patch("frappe.db.set_value") as set_value,
 			patch("habibi_ai.cabinet.fulfilment.apply_workflow") as apply,
 		):
+			# Порядок вызовов: apply_workflow перечитывает документ из БД
+			# (doc.load_from_db), поэтому курьер должен быть записан раньше него
+			calls = MagicMock()
+			calls.attach_mock(set_value, "set_value")
+			calls.attach_mock(apply, "apply")
 			result = fulfilment.courier_take("SAL-ORD-2026-00013")
+		self.calls = calls
+		self.set_value = set_value
 		return result, doc, apply, get_value
 
 	def test_успех_назначает_курьера_и_диспатчит(self):
 		result, doc, apply, get_value = self._take(self._row())
 		self.assertEqual(result, {"taken": False})
-		self.assertEqual(doc.custom_courier, "HR-EMP-00001")
+		self.set_value.assert_called_once_with("Sales Order", "SAL-ORD-2026-00013", "custom_courier", "HR-EMP-00001")
 		apply.assert_called_once_with(doc, "Dispatch")
+		# Сначала курьер в БД, потом переход: условие Dispatch читает его из БД
+		self.assertEqual([c[0] for c in self.calls.mock_calls], ["set_value", "apply"])
 		self.assertTrue(get_value.call_args.kwargs["for_update"])
 
 	def test_заказ_уже_взят_другим(self):
 		result, _doc, apply, _ = self._take(self._row(custom_courier="HR-EMP-00002"))
 		self.assertEqual(result, {"taken": True})
 		apply.assert_not_called()
+		self.set_value.assert_not_called()
 
 	def test_заказ_не_в_готово(self):
 		for state in ("In Kitchen", "Out for Delivery", "Cancelled"):

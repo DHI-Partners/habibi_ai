@@ -156,8 +156,11 @@ def courier_take(name):
 		or row.custom_fulfilment_type != DELIVERY
 	):
 		return {"taken": True}
-	doc = frappe.get_doc("Sales Order", name)
-	doc.custom_courier = employee
-	# Воркфлоу проверит роль перехода и условие «доставка и курьер заданы»
-	apply_workflow(doc, TAKE_ACTION)
+	# Курьера пишем в БД до перехода: apply_workflow перечитывает документ
+	# (doc.load_from_db) и теряет несохранённое назначение, а условие Dispatch
+	# «доставка и курьер заданы» читает именно его. Строка уже заблокирована;
+	# не прошёл переход — запрос откатится вместе с назначением.
+	frappe.db.set_value("Sales Order", name, "custom_courier", employee)
+	# Воркфлоу проверит роль перехода и это условие
+	apply_workflow(frappe.get_doc("Sales Order", name), TAKE_ACTION)
 	return {"taken": False}
