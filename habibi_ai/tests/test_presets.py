@@ -95,8 +95,13 @@ class TestPresets(IntegrationTestCase):
 		presets.apply("food")
 		for role in ("Habibi Kitchen", "Habibi Courier"):
 			with self.subTest(role):
+				# Переход проведённого заказа (1 → 1) Frappe считает update_after_submit
+				# и требует право submit: без него «Готово» падает с 403
 				self.assertTrue(
-					frappe.db.exists("Custom DocPerm", {"parent": "Sales Order", "role": role, "read": 1, "write": 1})
+					frappe.db.exists(
+						"Custom DocPerm",
+						{"parent": "Sales Order", "role": role, "read": 1, "write": 1, "submit": 1},
+					)
 				)
 				self.assertTrue(frappe.db.exists("Custom DocPerm", {"parent": "Account", "role": role, "read": 1}))
 				# Ни удалять, ни отменять заказ они не вправе

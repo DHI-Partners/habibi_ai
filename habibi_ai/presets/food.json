@@ -41,8 +41,8 @@
     "Habibi Staff": {"Sales Order": ["read", "write", "submit", "cancel"], "Customer": ["read"], "Item": ["read"], "Telegram Chat": ["read"],
       "Telegram Message": ["read"], "AI Channel Chat": ["read", "write"], "AI Order Quote": ["read"], "Habibi AI Settings": ["read"], "Company": ["read"],
       "Account": ["read"]},
-    "Habibi Kitchen": {"Sales Order": ["read", "write"], "Item": ["read"], "Customer": ["read"], "Account": ["read"]},
-    "Habibi Courier": {"Sales Order": ["read", "write"], "Item": ["read"], "Customer": ["read"], "Account": ["read"],
+    "Habibi Kitchen": {"Sales Order": ["read", "write", "submit"], "Item": ["read"], "Customer": ["read"], "Account": ["read"]},
+    "Habibi Courier": {"Sales Order": ["read", "write", "submit"], "Item": ["read"], "Customer": ["read"], "Account": ["read"],
       "Employee": ["read"], "Delivery Zone": ["read"]}
   }
 }
