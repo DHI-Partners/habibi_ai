@@ -892,3 +892,86 @@ class TestРепликиВЖурнале(IntegrationTestCase):
 		# Его пишет run_turn — с метками инструментов
 		self._insert(self._doc("Outgoing", automated=1))
 		self.assertEqual(self._events(), [])
+
+
+class _NewPeerClient:
+	"""Клиент Telethon: человека, написавшего первым, он «узнаёт» только после чтения диалогов."""
+
+	def __init__(self):
+		self.known = False
+		self.sent = []
+
+	async def get_entity(self, chat_id):
+		if not self.known:
+			raise ValueError(f"Could not find the input entity for {chat_id}")
+		return f"entity:{chat_id}"
+
+	async def get_dialogs(self, limit=None):
+		self.known = True
+		return []
+
+	async def send_message(self, entity, text, **kwargs):
+		self.sent.append((entity, text))
+		return Mock(id=900)
+
+
+class TestНовыйКлиентПишетПервым(IntegrationTestCase):
+	"""Главный сценарий бизнеса: незнакомый человек пишет аккаунту — и получает ответ ИИ.
+
+	Раньше ответ не уходил («аккаунт ещё не знает чат»): отправка искала человека в
+	сохранённой сессии, а он был известен только слушателю. Тест идёт всей цепочкой —
+	задача, ответ ИИ, bridge.send, user_client.send_message, поиск собеседника, —
+	подменён лишь сам клиент Telegram.
+	"""
+
+	def setUp(self):
+		setup.install_telegram_fields()
+		title = "ai-bridge-test-new-peer"
+		self.account = frappe.db.get_value("Telegram Account", {"title": title})
+		if not self.account:
+			self.account = frappe.get_doc({
+				"doctype": "Telegram Account", "title": title, "phone": "+70000000003",
+				"api_id": "1", "api_hash": "x",
+			}).insert().name
+		frappe.db.set_value("Telegram Account", self.account, {"ai_enabled": 1, "ai_bot": "3"})
+		self.chat = make_chat("5559400")
+		self.channel = ("Telegram Account", self.account)
+		frappe.db.delete(bridge.PAIR, {"telegram_chat": self.chat})
+		frappe.db.delete("Telegram Message", {"chat": self.chat})
+
+	def tearDown(self):
+		frappe.db.set_value("Telegram Account", self.account, {"ai_enabled": 0})
+		frappe.db.delete(bridge.PAIR, {"telegram_chat": self.chat})
+		frappe.db.delete("Telegram Message", {"chat": self.chat})
+		frappe.db.commit()
+
+	def test_незнакомому_клиенту_ответ_уходит(self):
+		with patch("frappe.enqueue"):
+			frappe.get_doc({
+				"doctype": "Telegram Message", "chat": self.chat, "message_id": "31",
+				"direction": "Incoming", "content": "Ассаляму алейкум! Что сегодня есть на обед?",
+				"telegram_account": self.account, "sent_on": now_datetime(),
+			}).insert(ignore_permissions=True)
+		frappe.db.commit()
+
+		client = _NewPeerClient()
+
+		def run(account, coro_fn, **kwargs):
+			import asyncio
+
+			return asyncio.run(coro_fn(client))
+
+		engine = Mock()
+		engine.create_chat = Mock(return_value={"id": 77})
+		with (
+			patch("time.sleep"),
+			patch("habibi_ai.api.get_client", return_value=engine),
+			patch("habibi_ai.api.run_turn", Mock(return_value={"response": "Вот наше меню", "debug": []})),
+			patch("habibi_telegram.mtproto.call", side_effect=run),
+			patch("habibi_telegram.user_client.store.log_message", return_value=("TM-1",)),
+			patch("habibi_ai.channels.telegram._report") as report,
+		):
+			bridge.reply_job("Telegram Account", self.account, self.chat)
+
+		report.assert_not_called()
+		self.assertEqual(client.sent, [("entity:5559400", "Вот наше меню")])

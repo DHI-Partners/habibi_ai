@@ -567,3 +567,46 @@ class TestDeleteConversation(TestCabinetChats):
 			with self.assertRaises(frappe.DoesNotExistError):
 				chats.delete_conversation(self.chat.name)
 		self.assertEqual(self._count(), 3)
+
+
+class TestChatUnanswered(TestCabinetChats):
+	"""Клиент написал, а ответа нет — владелец должен это видеть, какой бы ни была причина молчания."""
+
+	def _last_message(self, direction, minutes_ago):
+		frappe.db.delete("Telegram Message", {"chat": self.chat.name})
+		at = frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-minutes_ago)
+		frappe.get_doc(
+			{
+				"doctype": "Telegram Message",
+				"chat": self.chat.name,
+				"direction": direction,
+				"content": "текст",
+				"telegram_bot": self.bot,
+				"creation": at,
+			}
+		).db_insert()
+		frappe.db.set_value("Telegram Chat", self.chat.name, "last_message_on", at, update_modified=False)
+
+	def _unanswered(self):
+		return next(c for c in chats.list() if c["chat"] == self.chat.name)["unanswered"]
+
+	def test_клиент_ждёт_дольше_порога(self):
+		self._last_message("Incoming", chats.UNANSWERED_AFTER_MIN + 5)
+		self.assertTrue(self._unanswered())
+
+	def test_свежее_сообщение_ещё_не_тревога(self):
+		self._last_message("Incoming", 1)
+		self.assertFalse(self._unanswered())
+
+	def test_последним_ответили_нам_не_тревога(self):
+		self._last_message("Outgoing", chats.UNANSWERED_AFTER_MIN + 5)
+		self.assertFalse(self._unanswered())
+
+	def test_давняя_переписка_это_не_срочно(self):
+		self._last_message("Incoming", chats.UNANSWERED_WINDOW_H * 60 + 5)
+		self.assertFalse(self._unanswered())
+
+	def test_чат_на_паузе_не_считается_молчанием_бота(self):
+		self._last_message("Incoming", chats.UNANSWERED_AFTER_MIN + 5)
+		frappe.db.set_value("AI Channel Chat", {"telegram_chat": self.chat.name}, "ai_paused", 1)
+		self.assertFalse(self._unanswered())

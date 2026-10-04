@@ -18,6 +18,10 @@ PAIR = "AI Channel Chat"
 PAUSED_BY_STAFF = "Выключено вручную"
 # Чистить переписку вправе только владелец: это стирание истории, а не рабочее действие
 DELETE_ROLES = ("Habibi Owner", "System Manager")
+# Сколько минут клиент может ждать, прежде чем переписка помечается «без ответа»
+UNANSWERED_AFTER_MIN = 5
+# Дольше этого срока молчание уже не срочное: старые переписки шумом не показываем
+UNANSWERED_WINDOW_H = 24
 LIST_LIMIT = 100
 PAGE = 50
 
@@ -56,6 +60,35 @@ def _pair_for_write(chat):
 	pair = _pair(chat)
 	pair.check_permission("write")
 	return pair
+
+
+def _waiting_chats(rows, paused):
+	"""Чаты, где последнее сообщение от клиента и он ждёт дольше UNANSWERED_AFTER_MIN минут.
+
+	Признак строится по самой переписке, а не по списку известных ошибок: так видно
+	любую причину молчания, в том числе ту, о которой система не узнала. Чат на паузе
+	не в счёт — там ответ намеренно за человеком, и его показывает «ждёт человека».
+	"""
+	candidates = [
+		r.name
+		for r in rows
+		if r.name not in paused
+		and r.last_message_on
+		and UNANSWERED_AFTER_MIN * 60
+		<= frappe.utils.time_diff_in_seconds(frappe.utils.now_datetime(), r.last_message_on)
+		<= UNANSWERED_WINDOW_H * 3600
+	]
+	if not candidates:
+		return set()
+	last = frappe.db.sql(
+		"""
+		select m.chat, m.direction from `tabTelegram Message` m
+		join (select chat, max(creation) as at from `tabTelegram Message` where chat in %(chats)s group by chat) x
+			on x.chat = m.chat and x.at = m.creation
+		""",
+		{"chats": candidates},
+	)
+	return {chat for chat, direction in last if direction == "Incoming"}
 
 
 @frappe.whitelist()
@@ -98,6 +131,7 @@ def list():
 			as_list=True,
 		)
 	)
+	waiting = _waiting_chats(rows, {chat for chat, is_paused in paused.items() if is_paused})
 	return [
 		{
 			"chat": r.name,
@@ -105,6 +139,8 @@ def list():
 			"preview": (r.last_message_content or "")[:80],
 			"last_at": str(r.last_message_on or ""),
 			"paused": bool(paused.get(r.name)),
+			# Клиент написал последним и ждёт ответа дольше порога — бот молчит или не смог ответить
+			"unanswered": r.name in waiting,
 			# Под именем в шапке: числовой ID и @username — их копируют, чтобы найти человека в Telegram
 			"telegram_id": r.chat_id,
 			"username": (usernames.get(r.chat_id) or "").lstrip("@") or None,
